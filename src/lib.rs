@@ -6,9 +6,12 @@
 
 #![allow(non_snake_case)]
 
+mod archive;
 mod bitmap;
 mod com;
+mod log;
 mod registry;
+mod stream;
 
 use windows::core::{Interface, GUID, HRESULT};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER, S_FALSE, S_OK};

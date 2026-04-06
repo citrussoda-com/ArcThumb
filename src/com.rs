@@ -13,20 +13,43 @@
 //! and decode the first image.
 
 use std::cell::RefCell;
+use std::error::Error as StdError;
 use std::ffi::c_void;
 
 use windows::core::{implement, IUnknown, Interface, Result, GUID};
-use windows::Win32::Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_POINTER};
+use windows::Win32::Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER};
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl, IStream};
 use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithStream, IInitializeWithStream_Impl,
 };
 use windows::Win32::UI::Shell::{
-    IThumbnailProvider, IThumbnailProvider_Impl, WTSAT_RGB, WTS_ALPHATYPE,
+    IThumbnailProvider, IThumbnailProvider_Impl, WTSAT_ARGB, WTS_ALPHATYPE,
 };
 
-use crate::bitmap;
+use crate::{alog, archive, bitmap, stream::ComStreamReader};
+
+/// End-to-end: stream → ZIP → first image bytes → decode → resize → HBITMAP.
+///
+/// Any failure falls through as an `Err`; the caller (`GetThumbnail`)
+/// logs it and draws a red fallback so the user can see that *something*
+/// went wrong without Explorer showing a broken icon.
+fn try_generate_thumbnail(stream: IStream, cx: u32) -> std::result::Result<HBITMAP, Box<dyn StdError>> {
+    let reader = ComStreamReader::new(stream);
+    let (name, bytes) = archive::read_first_image(reader)?;
+    alog!("  picked: {name} ({} bytes)", bytes.len());
+
+    let img = image::load_from_memory(&bytes)?;
+    alog!("  decoded: {}x{}", img.width(), img.height());
+
+    // Preserve aspect ratio, fit inside cx × cx. `Triangle` (bilinear)
+    // is a good default — fast and visually fine at thumbnail sizes.
+    let resized = img.resize(cx, cx, image::imageops::FilterType::Triangle).to_rgba8();
+    alog!("  resized: {}x{}", resized.width(), resized.height());
+
+    let hbmp = bitmap::from_rgba(&resized)?;
+    Ok(hbmp)
+}
 
 /// CLSID for the ArcThumb thumbnail provider COM class.
 /// **DO NOT CHANGE** — baked into users' registries on install.
@@ -104,17 +127,30 @@ impl IThumbnailProvider_Impl for ArcThumbProvider_Impl {
             return Err(E_POINTER.into());
         }
 
+        alog!("---- GetThumbnail cx={cx} ----");
+
         // Clamp to a sane range so malicious or weird requests can't
         // make us allocate gigabytes.
-        let size = cx.clamp(16, 1024) as i32;
+        let size = cx.clamp(16, 1024);
 
-        // Phase 1: ignore the stream, always return solid cyan-ish blue.
-        // 0xAARRGGBB = fully opaque, R=0x33, G=0x99, B=0xFF.
-        let hbmp = bitmap::create_solid_color(size, 0xFF3399FF)?;
+        let stream = self.this.stream.borrow().clone().ok_or_else(|| {
+            alog!("  no stream attached");
+            windows::core::Error::from_hresult(E_FAIL)
+        })?;
+
+        // On any failure (not-an-archive, no images inside, decode
+        // error, …) we return an error HRESULT. Explorer then falls
+        // back to the built-in handler's icon, which is the right UX:
+        // archives without images should look like normal zips, not
+        // like broken thumbnails.
+        let hbmp = try_generate_thumbnail(stream, size).map_err(|e| {
+            alog!("  no thumbnail: {e}");
+            windows::core::Error::from_hresult(E_FAIL)
+        })?;
 
         unsafe {
             *phbmp = hbmp;
-            *pdwalpha = WTSAT_RGB;
+            *pdwalpha = WTSAT_ARGB;
         }
         Ok(())
     }

@@ -23,6 +23,10 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell_PropertiesSystem",
 ]}
 winreg = "0.52"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = [
+    "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
+] }
 
 [profile.release]
 lto = true
