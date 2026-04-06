@@ -6,6 +6,8 @@
 //! - **7z**  (`7z\xBC\xAF\x27\x1C`) — via `sevenz-rust`, direct Read+Seek
 //! - **RAR** (`Rar!\x1A\x07\x00` / `Rar!\x1A\x07\x01\x00`) — via `unrar`,
 //!   which insists on a file path, so we spool the stream to `%TEMP%`.
+//! - **TAR/CBT** (`ustar` at offset 257) — via `tar` crate, Read only
+//!   (we use Seek to rewind between listing and extraction passes)
 //!
 //! "First image" is defined as the alphabetically smallest file whose
 //! extension is in `IMAGE_EXTS`.
@@ -31,6 +33,7 @@ enum Format {
     Zip,
     SevenZ,
     Rar,
+    Tar,
     Unknown,
 }
 
@@ -55,6 +58,12 @@ fn detect_format(magic: &[u8]) -> Format {
     if magic.len() >= 8 && &magic[..8] == b"Rar!\x1A\x07\x01\x00" {
         return Format::Rar;
     }
+    // TAR (ustar): the string "ustar" lives at byte offset 257 inside the
+    // 512-byte header. This covers POSIX ustar and pax archives, which is
+    // what modern tools (including 7-Zip, tar, bsdtar) produce.
+    if magic.len() >= 262 && &magic[257..262] == b"ustar" {
+        return Format::Tar;
+    }
     Format::Unknown
 }
 
@@ -62,15 +71,19 @@ fn detect_format(magic: &[u8]) -> Format {
 pub fn read_first_image<R: Read + Seek>(
     mut reader: R,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    // Read enough of the header for the `ustar` magic at offset 257.
+    // `Read::read` may return short; `take().read_to_end()` is the
+    // idiomatic "read up to N bytes greedily" pattern.
     reader.seek(SeekFrom::Start(0))?;
-    let mut magic = [0u8; 16];
-    let n = reader.read(&mut magic)?;
+    let mut magic: Vec<u8> = Vec::with_capacity(512);
+    reader.by_ref().take(512).read_to_end(&mut magic)?;
     reader.seek(SeekFrom::Start(0))?;
 
-    match detect_format(&magic[..n]) {
+    match detect_format(&magic) {
         Format::Zip => zip_read_first_image(reader),
         Format::SevenZ => sevenz_read_first_image(reader),
         Format::Rar => rar_read_first_image(reader),
+        Format::Tar => tar_read_first_image(reader),
         Format::Unknown => Err("unrecognised archive format".into()),
     }
 }
@@ -215,6 +228,54 @@ fn rar_read_first_image<R: Read>(
     }
 
     Err("RAR target not found on second pass".into())
+}
+
+// =============================================================================
+// TAR / CBT backend
+// =============================================================================
+
+fn tar_read_first_image<R: Read + Seek>(
+    mut reader: R,
+) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    // Pass 1: walk the archive and collect image entry names.
+    // The block scope drops the `tar::Archive` (and its borrow of
+    // `reader`) before we seek for pass 2.
+    let target: String = {
+        reader.seek(SeekFrom::Start(0))?;
+        let mut archive = tar::Archive::new(&mut reader);
+        let mut names: Vec<String> = Vec::new();
+        for entry in archive.entries()? {
+            let entry = entry?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path()?;
+            let name = path.to_string_lossy().into_owned();
+            if has_image_ext(&name) {
+                names.push(name);
+            }
+        }
+        names
+            .into_iter()
+            .min()
+            .ok_or("archive contains no image files")?
+    };
+
+    // Pass 2: walk again, extract the target.
+    reader.seek(SeekFrom::Start(0))?;
+    let mut archive = tar::Archive::new(&mut reader);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?;
+        let name = path.to_string_lossy().into_owned();
+        if name == target {
+            let mut buf = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut buf)?;
+            return Ok((target, buf));
+        }
+    }
+
+    Err("tar target not found on second pass".into())
 }
 
 /// Build a unique-ish temp file path for spooling an archive.

@@ -46,6 +46,7 @@ const EXTENSIONS: &[&str] = &[
     ".zip", ".cbz",
     ".rar", ".cbr",
     ".7z", ".cb7",
+    ".cbt",
 ];
 
 /// Resolve our own DLL path by asking Windows "what module is this
