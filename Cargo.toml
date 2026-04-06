@@ -1,0 +1,30 @@
+[package]
+name = "arcthumb"
+version = "0.1.0"
+edition = "2024"
+description = "Windows Shell Extension that generates thumbnails for archive files (ZIP/RAR/7Z) containing images, including WebP and AVIF."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/remu1519/ArcThumb"
+readme = "README.md"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-core = "0.58"
+windows = { version = "0.58", features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+]}
+winreg = "0.52"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
