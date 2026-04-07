@@ -1,0 +1,139 @@
+# Release: on every push to main, decide whether the commit history
+# warrants a version bump (Conventional Commits), and if so:
+#
+#   1. Update Cargo.toml + Cargo.lock + installer/arcthumb.iss
+#   2. Build the release DLL and arcthumb-config.exe
+#   3. Compile the Inno Setup installer
+#   4. Commit the version bump and create a `vX.Y.Z` tag
+#   5. Publish a GitHub Release with ArcThumb-Setup.exe attached
+#
+# Everything happens in one workflow run, so there is no need for a
+# Personal Access Token to chain workflows. The default GITHUB_TOKEN
+# (with the repo's "Read and write" workflow permissions) is enough.
+#
+# Conventional Commits mapping:
+#   feat!:        / BREAKING CHANGE: in body  -> major bump
+#   feat:                                     -> minor bump
+#   fix: / chore: / docs: / refactor: / etc.  -> patch bump
+#   anything without a recognised prefix      -> no bump (workflow exits)
+#
+# The build step runs BEFORE the commit/tag push, so if the build
+# fails the repository is left untouched — no half-released versions.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    name: Bump, build, and publish
+    runs-on: windows-latest
+    # Don't loop on our own bump commits.
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: "v"
+          # Conventional Commits — `feat!:` or `feat(scope)!:` etc.
+          major_pattern: "/^[a-z]+(\\([^)]+\\))?!:/"
+          major_regexp_flags: "m"
+          minor_pattern: "/^feat(\\([^)]+\\))?:/"
+          minor_regexp_flags: "m"
+          version_format: "${major}.${minor}.${patch}"
+          bump_each_commit: false
+          # Pick up "BREAKING CHANGE:" footers in commit bodies.
+          search_commit_body: true
+
+      - name: Show computed version
+        shell: bash
+        run: |
+          echo "version       = ${{ steps.version.outputs.version }}"
+          echo "version_type  = ${{ steps.version.outputs.version_type }}"
+          echo "increment     = ${{ steps.version.outputs.increment }}"
+
+      - name: Skip if no version change
+        id: gate
+        shell: bash
+        run: |
+          if [ "${{ steps.version.outputs.version_type }}" = "none" ]; then
+            echo "No bumpable commits since the last tag — skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.gate.outputs.skip == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: steps.gate.outputs.skip == 'false'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Update Cargo.toml version
+        if: steps.gate.outputs.skip == 'false'
+        shell: bash
+        run: |
+          sed -i 's/^version = ".*"/version = "${{ steps.version.outputs.version }}"/' Cargo.toml
+
+      - name: Update Cargo.lock
+        if: steps.gate.outputs.skip == 'false'
+        run: cargo update -p arcthumb
+
+      - name: Update installer version
+        if: steps.gate.outputs.skip == 'false'
+        shell: bash
+        run: |
+          sed -i 's/#define MyAppVersion    ".*"/#define MyAppVersion    "${{ steps.version.outputs.version }}"/' installer/arcthumb.iss
+
+      - name: Build release binaries
+        if: steps.gate.outputs.skip == 'false'
+        run: cargo build --release
+
+      - name: Build Inno Setup installer
+        if: steps.gate.outputs.skip == 'false'
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.7
+        with:
+          path: installer/arcthumb.iss
+          options: /O+
+
+      - name: Verify installer exists
+        if: steps.gate.outputs.skip == 'false'
+        shell: pwsh
+        run: |
+          if (-Not (Test-Path "target/installer/ArcThumb-Setup.exe")) {
+            Write-Error "Installer not found at target/installer/ArcThumb-Setup.exe"
+            exit 1
+          }
+          Get-Item "target/installer/ArcThumb-Setup.exe" | Format-List Name, Length
+
+      - name: Commit version bump and tag
+        if: steps.gate.outputs.skip == 'false'
+        shell: bash
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock installer/arcthumb.iss
+          git commit -m "chore: bump version to v${{ steps.version.outputs.version }} [skip ci]"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin main
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        if: steps.gate.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          files: target/installer/ArcThumb-Setup.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: false

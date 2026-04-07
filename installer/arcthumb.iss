@@ -18,8 +18,8 @@
 
 #define MyAppName       "ArcThumb"
 #define MyAppVersion    "0.1.0"
-#define MyAppPublisher  "remu1519"
-#define MyAppURL        "https://github.com/remu1519/ArcThumb"
+#define MyAppPublisher  "citrussoda-com"
+#define MyAppURL        "https://github.com/citrussoda-com/ArcThumb"
 #define MyAppExeName    "arcthumb-config.exe"
 
 [Setup]
