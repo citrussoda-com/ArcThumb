@@ -2,9 +2,9 @@
 name = "arcthumb"
 version = "0.1.0"
 edition = "2024"
-description = "Windows Shell Extension that generates thumbnails for archive files (ZIP/RAR/7Z) containing images, including WebP and AVIF."
+description = "Windows Shell Extension that generates Explorer thumbnails and preview-pane previews for comic-book archives (ZIP/CBZ/RAR/CBR/7Z/CB7/CBT) and ebooks (EPUB/FB2/MOBI/AZW/AZW3)."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/remu1519/ArcThumb"
+repository = "https://github.com/citrussoda-com/ArcThumb"
 readme = "README.md"
 
 [lib]
