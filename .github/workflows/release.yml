@@ -123,9 +123,17 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock installer/arcthumb.iss
-          git commit -m "chore: bump version to v${{ steps.version.outputs.version }} [skip ci]"
+          # If sed didn't change anything (e.g. Cargo.toml was already at the
+          # target version, common on the very first release), there is
+          # nothing to commit — but we still want to tag the current HEAD
+          # so the release/asset upload steps can run.
+          if git diff --cached --quiet; then
+            echo "No file changes to commit; tagging current HEAD as v${{ steps.version.outputs.version }}."
+          else
+            git commit -m "chore: bump version to v${{ steps.version.outputs.version }} [skip ci]"
+            git push origin main
+          fi
           git tag "v${{ steps.version.outputs.version }}"
-          git push origin main
           git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Create GitHub Release
