@@ -14,7 +14,7 @@ use native_windows_gui as nwg;
 use arcthumb::registry;
 use arcthumb::settings::{Settings, SortOrder};
 
-use crate::state::{UiModel, EXT_COUNT};
+use crate::state::{EXT_COUNT, UiModel};
 use crate::strings::{self, Strings};
 
 // `#[derive(NwgUi)]` needs the struct to be `Default`, and `Default`
@@ -202,12 +202,16 @@ impl ConfigApp {
         self.rb_alpha.set_text(strings.sort_alphabetical);
         match model.settings.sort_order {
             SortOrder::Natural => {
-                self.rb_natural.set_check_state(nwg::RadioButtonState::Checked);
-                self.rb_alpha.set_check_state(nwg::RadioButtonState::Unchecked);
+                self.rb_natural
+                    .set_check_state(nwg::RadioButtonState::Checked);
+                self.rb_alpha
+                    .set_check_state(nwg::RadioButtonState::Unchecked);
             }
             SortOrder::Alphabetical => {
-                self.rb_natural.set_check_state(nwg::RadioButtonState::Unchecked);
-                self.rb_alpha.set_check_state(nwg::RadioButtonState::Checked);
+                self.rb_natural
+                    .set_check_state(nwg::RadioButtonState::Unchecked);
+                self.rb_alpha
+                    .set_check_state(nwg::RadioButtonState::Checked);
             }
         }
 
@@ -381,8 +385,7 @@ fn check_to_bool(c: nwg::CheckBoxState) -> bool {
 /// "Enable preview pane" checkbox and clicks Apply.
 fn apply_preview_toggle(enable: bool) -> std::io::Result<()> {
     if enable {
-        let dll = crate::dll_path::resolve_dll_path()
-            .map_err(std::io::Error::other)?;
+        let dll = crate::dll_path::resolve_dll_path().map_err(std::io::Error::other)?;
         registry::register_preview_clsid(&dll)?;
         for ext in registry::EXTENSIONS {
             registry::register_preview_extension(ext)?;

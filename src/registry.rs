@@ -31,14 +31,14 @@ use std::io;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 
-use windows::core::PCWSTR;
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{
-    GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    GetModuleFileNameW, GetModuleHandleExW,
 };
-use winreg::enums::*;
+use windows::core::PCWSTR;
 use winreg::RegKey;
+use winreg::enums::*;
 
 /// String form of the ArcThumb thumbnail provider CLSID (defined in
 /// `com.rs`). **Never change** — baked into users' registries.
@@ -72,13 +72,8 @@ const PREVHOST_APPID: &str = "{534A1E02-D58F-44f0-B58B-36CBED287C7C}";
 /// extension on a double-suffixed file. `.mobi` / `.azw` / `.azw3`
 /// are Amazon Kindle ebook formats sharing a PalmDB container.
 pub const EXTENSIONS: &[&str] = &[
-    ".zip", ".cbz",
-    ".rar", ".cbr",
-    ".7z", ".cb7",
-    ".cbt",
-    ".epub",
-    ".fb2",
-    ".mobi", ".azw", ".azw3",
+    ".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7", ".cbt", ".epub", ".fb2", ".mobi", ".azw",
+    ".azw3",
 ];
 
 // =============================================================================
@@ -141,8 +136,7 @@ fn get_dll_path_from_module() -> io::Result<String> {
     unsafe {
         let mut hmodule = HMODULE::default();
         GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             PCWSTR(get_dll_path_from_module as *const () as *const u16),
             &mut hmodule,
         )
@@ -307,10 +301,7 @@ pub fn unregister_preview_extension(ext: &str) -> io::Result<()> {
 /// True iff the preview-handler `InprocServer32` subkey exists. Used
 /// as the source of truth for the GUI's "Enable preview pane" toggle.
 pub fn is_preview_enabled() -> bool {
-    is_subkey_present(&format!(
-        "{}\\InprocServer32",
-        preview_clsid_root_path()
-    ))
+    is_subkey_present(&format!("{}\\InprocServer32", preview_clsid_root_path()))
 }
 
 // =============================================================================
@@ -500,7 +491,10 @@ mod tests {
         for ext in EXTENSIONS {
             let path = ext_shellex_path_under(&sandbox, ext);
             unregister_extension_at(&path).expect(ext);
-            assert!(!is_subkey_present(&path), "{ext} still present after unregister");
+            assert!(
+                !is_subkey_present(&path),
+                "{ext} still present after unregister"
+            );
         }
         unregister_clsid_at(&clsid_root).expect("clsid unregister");
     }

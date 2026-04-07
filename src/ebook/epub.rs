@@ -96,11 +96,7 @@ fn local_name_eq(e: &BytesStart, expected: &[u8]) -> bool {
 /// Find the value of an attribute by local name (namespace prefixes
 /// stripped). Decodes XML character entities so paths containing
 /// `&amp;` round-trip correctly.
-fn attr_value(
-    e: &BytesStart,
-    reader: &Reader<&[u8]>,
-    key: &[u8],
-) -> Option<String> {
+fn attr_value(e: &BytesStart, reader: &Reader<&[u8]>, key: &[u8]) -> Option<String> {
     for attr in e.attributes().flatten() {
         let attr_qname = attr.key;
         let attr_local = strip_namespace(attr_qname.as_ref());
@@ -198,19 +194,14 @@ fn handle_item(
     // exactly one of the tokens, not a substring (so a hypothetical
     // `super-cover-image` wouldn't false-positive).
     if let (Some(props), Some(href)) = (properties, href) {
-        if props.split_ascii_whitespace().any(|p| p == "cover-image")
-            && epub3_cover_href.is_none()
+        if props.split_ascii_whitespace().any(|p| p == "cover-image") && epub3_cover_href.is_none()
         {
             *epub3_cover_href = Some(href);
         }
     }
 }
 
-fn handle_meta(
-    e: &BytesStart,
-    reader: &Reader<&[u8]>,
-    epub2_cover_id: &mut Option<String>,
-) {
+fn handle_meta(e: &BytesStart, reader: &Reader<&[u8]>, epub2_cover_id: &mut Option<String>) {
     let name = attr_value(e, reader, b"name");
     let content = attr_value(e, reader, b"content");
     if let (Some(n), Some(c)) = (name, content) {
@@ -337,7 +328,8 @@ mod tests {
 
     #[test]
     fn container_xml_root_level_opf() {
-        let xml = r#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#;
+        let xml =
+            r#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#;
         assert_eq!(parse_container_xml(xml), Some("content.opf".into()));
     }
 

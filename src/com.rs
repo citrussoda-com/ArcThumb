@@ -16,7 +16,6 @@ use std::cell::RefCell;
 use std::error::Error as StdError;
 use std::ffi::c_void;
 
-use windows::core::{implement, IUnknown, Interface, Result, GUID};
 use windows::Win32::Foundation::{BOOL, CLASS_E_NOAGGREGATION, E_FAIL, E_POINTER};
 use windows::Win32::Graphics::Gdi::HBITMAP;
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl, IStream};
@@ -24,8 +23,9 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
     IInitializeWithStream, IInitializeWithStream_Impl,
 };
 use windows::Win32::UI::Shell::{
-    IThumbnailProvider, IThumbnailProvider_Impl, WTSAT_ARGB, WTS_ALPHATYPE,
+    IThumbnailProvider, IThumbnailProvider_Impl, WTS_ALPHATYPE, WTSAT_ARGB,
 };
+use windows::core::{GUID, IUnknown, Interface, Result, implement};
 
 use crate::{alog, archive, bitmap, decode, limits, stream::ComStreamReader};
 
@@ -59,8 +59,7 @@ fn try_generate_thumbnail(
 
 /// CLSID for the ArcThumb thumbnail provider COM class.
 /// **DO NOT CHANGE** — baked into users' registries on install.
-pub const CLSID_ARCTHUMB_PROVIDER: GUID =
-    GUID::from_u128(0x0F4F5659_D383_4945_A534_01E1EED1D23F);
+pub const CLSID_ARCTHUMB_PROVIDER: GUID = GUID::from_u128(0x0F4F5659_D383_4945_A534_01E1EED1D23F);
 
 // =============================================================================
 // IClassFactory

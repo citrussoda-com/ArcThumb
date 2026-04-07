@@ -30,9 +30,8 @@ impl UiModel {
         debug_assert_eq!(registry::EXTENSIONS.len(), EXT_COUNT);
 
         let settings = Settings::load_from_registry_uncached();
-        let ext_enabled: [bool; EXT_COUNT] = std::array::from_fn(|i| {
-            registry::is_extension_registered(registry::EXTENSIONS[i])
-        });
+        let ext_enabled: [bool; EXT_COUNT] =
+            std::array::from_fn(|i| registry::is_extension_registered(registry::EXTENSIONS[i]));
         let preview_enabled = registry::is_preview_enabled();
         Self {
             settings,

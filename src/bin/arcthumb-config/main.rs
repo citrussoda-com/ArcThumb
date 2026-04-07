@@ -107,8 +107,7 @@ fn run_gui() {
     ui::set_strings(strings::current());
     let model = UiModel::load();
 
-    let app = ui::ConfigApp::build_ui(Default::default())
-        .expect("failed to build UI");
+    let app = ui::ConfigApp::build_ui(Default::default()).expect("failed to build UI");
     app.set_initial_model(model);
     app.refresh_from_model();
 

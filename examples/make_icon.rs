@@ -19,7 +19,7 @@
 use std::io::Cursor;
 use std::path::Path;
 
-use image::{imageops::FilterType, DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageFormat, imageops::FilterType};
 
 const SIZES: &[u32] = &[16, 24, 32, 48, 64, 128, 256];
 
@@ -35,8 +35,7 @@ fn main() {
     let sub_pngs: Vec<Vec<u8>> = SIZES
         .iter()
         .map(|&size| {
-            let resized: DynamicImage =
-                source.resize_exact(size, size, FilterType::Lanczos3);
+            let resized: DynamicImage = source.resize_exact(size, size, FilterType::Lanczos3);
             let mut buf = Vec::new();
             resized
                 .write_to(&mut Cursor::new(&mut buf), ImageFormat::Png)
@@ -78,8 +77,7 @@ fn main() {
         ico.extend_from_slice(png);
     }
 
-    std::fs::write(dst, &ico)
-        .unwrap_or_else(|e| panic!("write {} failed: {e}", dst.display()));
+    std::fs::write(dst, &ico).unwrap_or_else(|e| panic!("write {} failed: {e}", dst.display()));
     println!(
         "wrote {} ({} bytes, {} sub-images)",
         dst.display(),

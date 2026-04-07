@@ -20,9 +20,9 @@
 use std::error::Error;
 use std::io::Cursor;
 
-use image::{DynamicImage, ImageReader, Limits};
 #[cfg(feature = "jxl")]
 use image::ImageDecoder;
+use image::{DynamicImage, ImageReader, Limits};
 
 use crate::limits;
 
@@ -65,14 +65,9 @@ fn decode_jxl(bytes: &[u8]) -> Result<DynamicImage, Box<dyn Error>> {
     if w > limits::MAX_IMAGE_DIMENSION || h > limits::MAX_IMAGE_DIMENSION {
         return Err(format!("JXL dimensions too large: {w}x{h}").into());
     }
-    let pixel_bytes = (w as u64)
-        .saturating_mul(h as u64)
-        .saturating_mul(4);
+    let pixel_bytes = (w as u64).saturating_mul(h as u64).saturating_mul(4);
     if pixel_bytes > limits::MAX_IMAGE_ALLOC {
-        return Err(format!(
-            "JXL would allocate {pixel_bytes} bytes, exceeds limit"
-        )
-        .into());
+        return Err(format!("JXL would allocate {pixel_bytes} bytes, exceeds limit").into());
     }
 
     Ok(DynamicImage::from_decoder(decoder)?)

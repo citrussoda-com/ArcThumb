@@ -25,16 +25,15 @@
 
 #![cfg(windows)]
 
-use std::ffi::{c_void, OsString};
+use std::ffi::{OsString, c_void};
 use std::io::Cursor;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 
-use windows::core::{w, Interface, GUID, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{FreeLibrary, HINSTANCE, HMODULE, HWND, RECT, S_OK};
-use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HBITMAP, HGDIOBJ};
+use windows::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetObjectW, HBITMAP, HGDIOBJ};
 use windows::Win32::System::Com::{
-    CoInitializeEx, CoUninitialize, IClassFactory, IStream, COINIT_APARTMENTTHREADED,
+    COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IClassFactory, IStream,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Ole::{IObjectWithSite, IOleWindow};
@@ -43,8 +42,9 @@ use windows::Win32::UI::Shell::{
     IPreviewHandler, IThumbnailProvider, SHCreateMemStream, WTS_ALPHATYPE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DestroyWindow, IsWindow, CW_USEDEFAULT, WINDOW_EX_STYLE, WS_POPUP,
+    CW_USEDEFAULT, CreateWindowExW, DestroyWindow, IsWindow, WINDOW_EX_STYLE, WS_POPUP,
 };
+use windows::core::{GUID, HRESULT, Interface, PCWSTR, w};
 
 use arcthumb::{CLSID_ARCTHUMB_PREVIEW, CLSID_ARCTHUMB_PROVIDER};
 
@@ -145,8 +145,7 @@ fn make_test_zip() -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
-        let opts = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
+        let opts = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         w.start_file("01.png", opts).unwrap();
         std::io::Write::write_all(&mut w, &png).unwrap();
         w.finish().unwrap();
@@ -211,15 +210,13 @@ fn end_to_end_thumbnail_via_dll() {
 
     // ---- Step 1: load the DLL ----------------------------------
     let wide = to_wide(&dll_path);
-    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
-        .expect("LoadLibraryW failed");
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }.expect("LoadLibraryW failed");
     let _dll_guard = LoadedDll(module);
 
     // ---- Step 2: resolve DllGetClassObject ---------------------
     let proc = unsafe { GetProcAddress(module, windows::core::s!("DllGetClassObject")) }
         .expect("DllGetClassObject not exported");
-    let dll_get_class_object: DllGetClassObjectFn =
-        unsafe { std::mem::transmute(proc) };
+    let dll_get_class_object: DllGetClassObjectFn = unsafe { std::mem::transmute(proc) };
 
     // ---- Step 3: ask for IClassFactory -------------------------
     let mut factory_ptr: *mut c_void = std::ptr::null_mut();
@@ -233,28 +230,23 @@ fn end_to_end_thumbnail_via_dll() {
     assert_eq!(hr, S_OK, "DllGetClassObject failed: {hr:?}");
     assert!(!factory_ptr.is_null(), "factory pointer is null");
 
-    let factory: IClassFactory =
-        unsafe { IClassFactory::from_raw(factory_ptr) };
+    let factory: IClassFactory = unsafe { IClassFactory::from_raw(factory_ptr) };
 
     // ---- Step 4: factory creates a thumbnail provider ----------
-    let provider_unknown: windows::core::IUnknown = unsafe {
-        factory
-            .CreateInstance(None)
-            .expect("CreateInstance failed")
-    };
+    let provider_unknown: windows::core::IUnknown =
+        unsafe { factory.CreateInstance(None).expect("CreateInstance failed") };
 
     // ---- Step 5: QueryInterface for the two interfaces we need
-    let init_with_stream: IInitializeWithStream =
-        provider_unknown.cast().expect("cast to IInitializeWithStream");
+    let init_with_stream: IInitializeWithStream = provider_unknown
+        .cast()
+        .expect("cast to IInitializeWithStream");
     let thumb_provider: IThumbnailProvider =
         provider_unknown.cast().expect("cast to IThumbnailProvider");
 
     // ---- Step 6: build a fake archive stream -------------------
     let zip_bytes = make_test_zip();
-    let stream: IStream = unsafe {
-        SHCreateMemStream(Some(&zip_bytes))
-    }
-    .expect("SHCreateMemStream returned None");
+    let stream: IStream =
+        unsafe { SHCreateMemStream(Some(&zip_bytes)) }.expect("SHCreateMemStream returned None");
 
     // ---- Step 7: Initialize(stream) ----------------------------
     unsafe {
@@ -289,7 +281,11 @@ fn end_to_end_thumbnail_via_dll() {
     };
     assert!(written > 0, "GetObjectW returned 0");
     assert!(bm.bmWidth > 0 && bm.bmWidth <= 64, "width = {}", bm.bmWidth);
-    assert!(bm.bmHeight > 0 && bm.bmHeight <= 64, "height = {}", bm.bmHeight);
+    assert!(
+        bm.bmHeight > 0 && bm.bmHeight <= 64,
+        "height = {}",
+        bm.bmHeight
+    );
     assert_eq!(bm.bmBitsPixel, 32, "expected 32bpp DIB");
     // The provider always returns ARGB so Explorer can composite.
     assert_eq!(alpha.0, 2 /* WTSAT_ARGB */);
@@ -304,23 +300,22 @@ fn dll_get_class_object_rejects_unknown_clsid() {
 
     let dll_path = locate_dll();
     let wide = to_wide(&dll_path);
-    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
-        .expect("LoadLibraryW failed");
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }.expect("LoadLibraryW failed");
     let _dll_guard = LoadedDll(module);
 
     let proc = unsafe { GetProcAddress(module, windows::core::s!("DllGetClassObject")) }
         .expect("DllGetClassObject not exported");
-    let dll_get_class_object: DllGetClassObjectFn =
-        unsafe { std::mem::transmute(proc) };
+    let dll_get_class_object: DllGetClassObjectFn = unsafe { std::mem::transmute(proc) };
 
     // Random GUID we definitely don't host.
     let bogus = GUID::from_u128(0xDEAD_BEEF_CAFE_BABE_0102_0304_0506_0708);
     let mut out: *mut c_void = std::ptr::null_mut();
-    let hr = unsafe {
-        dll_get_class_object(&bogus, &IClassFactory::IID, &mut out)
-    };
+    let hr = unsafe { dll_get_class_object(&bogus, &IClassFactory::IID, &mut out) };
     // CLASS_E_CLASSNOTAVAILABLE
-    assert_eq!(hr.0, 0x80040111u32 as i32, "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}");
+    assert_eq!(
+        hr.0, 0x80040111u32 as i32,
+        "expected CLASS_E_CLASSNOTAVAILABLE, got {hr:?}"
+    );
     assert!(out.is_null());
 }
 
@@ -330,8 +325,7 @@ fn dll_get_class_object_rejects_unknown_clsid() {
 fn dll_can_unload_now_returns_s_false() {
     let dll_path = locate_dll();
     let wide = to_wide(&dll_path);
-    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
-        .expect("LoadLibraryW failed");
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }.expect("LoadLibraryW failed");
     let _dll_guard = LoadedDll(module);
 
     let proc = unsafe { GetProcAddress(module, windows::core::s!("DllCanUnloadNow")) }
@@ -359,14 +353,12 @@ fn load_preview_factory() -> (LoadedDll, IClassFactory) {
     );
 
     let wide = to_wide(&dll_path);
-    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
-        .expect("LoadLibraryW failed");
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }.expect("LoadLibraryW failed");
     let dll_guard = LoadedDll(module);
 
     let proc = unsafe { GetProcAddress(module, windows::core::s!("DllGetClassObject")) }
         .expect("DllGetClassObject not exported");
-    let dll_get_class_object: DllGetClassObjectFn =
-        unsafe { std::mem::transmute(proc) };
+    let dll_get_class_object: DllGetClassObjectFn = unsafe { std::mem::transmute(proc) };
 
     let mut factory_ptr: *mut c_void = std::ptr::null_mut();
     let hr = unsafe {
@@ -422,14 +414,10 @@ fn preview_class_factory_creates_handler() {
 
     // CreateInstance should return an IUnknown that can be cast to
     // each of the four interfaces our preview handler implements.
-    let unknown: windows::core::IUnknown = unsafe {
-        factory
-            .CreateInstance(None)
-            .expect("CreateInstance failed")
-    };
+    let unknown: windows::core::IUnknown =
+        unsafe { factory.CreateInstance(None).expect("CreateInstance failed") };
     let _preview: IPreviewHandler = unknown.cast().expect("cast IPreviewHandler");
-    let _init: IInitializeWithStream =
-        unknown.cast().expect("cast IInitializeWithStream");
+    let _init: IInitializeWithStream = unknown.cast().expect("cast IInitializeWithStream");
     let _site: IObjectWithSite = unknown.cast().expect("cast IObjectWithSite");
     let _ole: IOleWindow = unknown.cast().expect("cast IOleWindow");
 }
@@ -440,11 +428,8 @@ fn preview_handler_end_to_end() {
     let (_dll, factory) = load_preview_factory();
 
     // Get the four interfaces.
-    let unknown: windows::core::IUnknown = unsafe {
-        factory
-            .CreateInstance(None)
-            .expect("CreateInstance failed")
-    };
+    let unknown: windows::core::IUnknown =
+        unsafe { factory.CreateInstance(None).expect("CreateInstance failed") };
     let preview: IPreviewHandler = unknown.cast().expect("IPreviewHandler");
     let init: IInitializeWithStream = unknown.cast().expect("IInitializeWithStream");
     let ole: IOleWindow = unknown.cast().expect("IOleWindow");
@@ -452,8 +437,8 @@ fn preview_handler_end_to_end() {
     // Build the same in-memory ZIP fixture the thumbnail end-to-end
     // test uses.
     let zip_bytes = make_test_zip();
-    let stream: IStream = unsafe { SHCreateMemStream(Some(&zip_bytes)) }
-        .expect("SHCreateMemStream returned None");
+    let stream: IStream =
+        unsafe { SHCreateMemStream(Some(&zip_bytes)) }.expect("SHCreateMemStream returned None");
     unsafe { init.Initialize(&stream, 0).expect("Initialize failed") };
 
     // Make a hidden parent and parent the preview to it.
@@ -465,9 +450,7 @@ fn preview_handler_end_to_end() {
         bottom: 400,
     };
     unsafe {
-        preview
-            .SetWindow(parent, &rect)
-            .expect("SetWindow failed");
+        preview.SetWindow(parent, &rect).expect("SetWindow failed");
         preview.SetRect(&rect).expect("SetRect failed");
         preview.DoPreview().expect("DoPreview failed");
     }
@@ -497,15 +480,16 @@ fn preview_handler_unload_is_safe_without_dopreview() {
     let _com = ComApartment::enter();
     let (_dll, factory) = load_preview_factory();
 
-    let unknown: windows::core::IUnknown = unsafe {
-        factory
-            .CreateInstance(None)
-            .expect("CreateInstance failed")
-    };
+    let unknown: windows::core::IUnknown =
+        unsafe { factory.CreateInstance(None).expect("CreateInstance failed") };
     let preview: IPreviewHandler = unknown.cast().expect("IPreviewHandler");
 
     // Calling Unload before DoPreview must succeed without panicking.
-    unsafe { preview.Unload().expect("Unload before DoPreview should succeed") };
+    unsafe {
+        preview
+            .Unload()
+            .expect("Unload before DoPreview should succeed")
+    };
 }
 
 // Suppress dead-code warnings for the unused OsStringExt import on

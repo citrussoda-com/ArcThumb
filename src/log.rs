@@ -21,9 +21,7 @@ use crate::limits;
 /// Decide once whether logging is on, cache the result.
 fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(debug_assertions) || std::env::var_os("ARCTHUMB_LOG").is_some()
-    })
+    *ENABLED.get_or_init(|| cfg!(debug_assertions) || std::env::var_os("ARCTHUMB_LOG").is_some())
 }
 
 /// Append `msg` (with newline) to the log file at `path`. Truncates
@@ -40,11 +38,7 @@ fn log_to(path: &Path, msg: &str) {
         }
     }
 
-    if let Ok(mut f) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{msg}");
     }
 }
@@ -125,9 +119,7 @@ mod tests {
         // and must NOT propagate an error. The thumbnail pipeline
         // calls `alog!` from hot paths and a logging failure must
         // never abort it.
-        let bad = std::path::PathBuf::from(
-            r"Z:\definitely\not\a\real\directory\arcthumb_test.log",
-        );
+        let bad = std::path::PathBuf::from(r"Z:\definitely\not\a\real\directory\arcthumb_test.log");
         log_to(&bad, "this should be silently dropped");
         assert!(!bad.exists());
     }

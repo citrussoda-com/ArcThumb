@@ -30,8 +30,8 @@
 //! return `None` — the user gets the default icon instead of a
 //! broken thumbnail.
 
-use mobi::headers::ExthRecord;
 use mobi::Mobi;
+use mobi::headers::ExthRecord;
 
 /// Try to extract a cover image from raw MOBI/AZW/AZW3 file bytes.
 ///
@@ -70,10 +70,7 @@ pub fn try_extract_cover(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
 fn extract_via_exth(mobi: &Mobi) -> Option<(String, Vec<u8>)> {
     // EXTH 201: stores a 4-byte big-endian offset relative to
     // `first_image_index`. Some publishers use it, some don't.
-    let record_values = mobi
-        .metadata
-        .exth
-        .get_record(ExthRecord::CoverOffset)?;
+    let record_values = mobi.metadata.exth.get_record(ExthRecord::CoverOffset)?;
     let first_value = record_values.first()?;
     if first_value.len() < 4 {
         return None;

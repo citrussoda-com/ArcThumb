@@ -25,7 +25,15 @@ use crate::{ebook, limits, settings};
 /// unreadable file as the "first image" and fail to produce a
 /// thumbnail at all.
 const IMAGE_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico",
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "tiff",
+    "tif",
+    "webp",
+    "ico",
     #[cfg(feature = "jxl")]
     "jxl",
 ];
@@ -176,8 +184,7 @@ fn fb2_read_first_image<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
-    ebook::fb2::try_extract_cover(&bytes)
-        .ok_or_else(|| "FB2 has no embedded cover image".into())
+    ebook::fb2::try_extract_cover(&bytes).ok_or_else(|| "FB2 has no embedded cover image".into())
 }
 
 // =============================================================================
@@ -267,11 +274,7 @@ fn sevenz_read_first_image<R: Read + Seek>(
         .archive()
         .files
         .iter()
-        .filter(|f| {
-            !f.is_directory()
-                && has_image_ext(&f.name)
-                && f.size <= limits::MAX_ENTRY_SIZE
-        })
+        .filter(|f| !f.is_directory() && has_image_ext(&f.name) && f.size <= limits::MAX_ENTRY_SIZE)
         .map(|f| f.name.clone())
         .collect();
     let target = settings::pick_first_image(candidates)
@@ -301,9 +304,7 @@ fn sevenz_read_first_image<R: Read + Seek>(
 // library only accepts file paths.
 // =============================================================================
 
-fn rar_read_first_image<R: Read>(
-    mut reader: R,
-) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+fn rar_read_first_image<R: Read>(mut reader: R) -> Result<(String, Vec<u8>), Box<dyn Error>> {
     // Opportunistic cleanup of orphaned temp files from previous runs
     // where Explorer may have crashed mid-extraction.
     cleanup_stale_temp_files();
@@ -346,8 +347,7 @@ fn rar_read_first_image<R: Read>(
             }
         })
         .collect();
-    let target = settings::pick_first_image(candidates)
-        .ok_or("archive contains no image files")?;
+    let target = settings::pick_first_image(candidates).ok_or("archive contains no image files")?;
 
     // Pass 2: walk the archive again with read access, extract the target.
     let mut archive = Archive::new(&temp_path).open_for_processing()?;
@@ -457,10 +457,7 @@ mod tests {
 
     #[test]
     fn detect_sevenz() {
-        assert_eq!(
-            detect_format(b"7z\xBC\xAF\x27\x1Crest"),
-            Format::SevenZ
-        );
+        assert_eq!(detect_format(b"7z\xBC\xAF\x27\x1Crest"), Format::SevenZ);
     }
 
     #[test]
@@ -497,7 +494,9 @@ mod tests {
 
     #[test]
     fn image_ext_recognised_lowercase() {
-        for ext in &["jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico"] {
+        for ext in &[
+            "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico",
+        ] {
             assert!(has_image_ext(&format!("foo.{ext}")), "ext={ext}");
         }
     }
@@ -537,8 +536,8 @@ mod tests {
         let mut buf = Vec::new();
         {
             let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
             for (name, body) in entries {
                 w.start_file(*name, opts).unwrap();
                 std::io::Write::write_all(&mut w, body).unwrap();
@@ -576,22 +575,20 @@ mod tests {
 
     #[test]
     fn zip_skips_non_image_files() {
-        let zip = build_zip(&[
-            ("notes.txt", b"text"),
-            ("only.png", b"PNG_BYTES"),
-        ]);
+        let zip = build_zip(&[("notes.txt", b"text"), ("only.png", b"PNG_BYTES")]);
         let (name, _) = read_first_image(zip).expect("read_first_image");
         assert_eq!(name, "only.png");
     }
 
     #[test]
     fn zip_with_no_images_errors() {
-        let zip = build_zip(&[
-            ("a.txt", b"text"),
-            ("b.md", b"md"),
-        ]);
+        let zip = build_zip(&[("a.txt", b"text"), ("b.md", b"md")]);
         let result = read_first_image(zip);
-        assert!(result.is_err(), "expected error, got {:?}", result.map(|(n, _)| n));
+        assert!(
+            result.is_err(),
+            "expected error, got {:?}",
+            result.map(|(n, _)| n)
+        );
     }
 
     #[test]
@@ -700,8 +697,7 @@ mod tests {
         assert_eq!(name, "page1.png");
         // Round-trip the bytes through the decoder to prove they
         // survived the 7z compression cycle intact.
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode 7z entry");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode 7z entry");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
     }
@@ -709,11 +705,7 @@ mod tests {
     #[test]
     fn sevenz_picks_cover_over_sort() {
         let png = make_tiny_png();
-        let sz = build_7z(&[
-            ("aaa.jpg", &png),
-            ("cover.jpg", &png),
-            ("zzz.jpg", &png),
-        ]);
+        let sz = build_7z(&[("aaa.jpg", &png), ("cover.jpg", &png), ("zzz.jpg", &png)]);
         let (name, _) = read_first_image(sz).expect("7z read_first_image");
         assert_eq!(name, "cover.jpg");
     }
@@ -847,8 +839,8 @@ mod tests {
     /// Build a minimal valid FB2 document containing a single
     /// base64-encoded image binary referenced by the coverpage.
     fn build_fb2(cover_id: &str, png_bytes: &[u8]) -> Vec<u8> {
-        use base64::engine::general_purpose::STANDARD as B64;
         use base64::Engine;
+        use base64::engine::general_purpose::STANDARD as B64;
         let b64 = B64.encode(png_bytes);
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
@@ -876,8 +868,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         assert_eq!(name, "cover.png");
         // Round-trip verification: the decoded base64 must still be
         // a valid PNG that the image crate can decode.
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode FB2 cover");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode FB2 cover");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
     }
@@ -906,8 +897,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         let zip = build_zip(&[("book.fb2", &fb2)]);
         let (name, bytes) = read_first_image(zip).expect("fb2.zip read");
         assert_eq!(name, "c.png");
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode fb2.zip cover");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode fb2.zip cover");
         assert_eq!(img.width(), 2);
     }
 
@@ -918,10 +908,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         // authoritative than a stray image in the same ZIP.
         let png = make_tiny_png();
         let fb2 = build_fb2("inside.png", &png);
-        let zip = build_zip(&[
-            ("book.fb2", &fb2),
-            ("zzz.png", b"not really a png"),
-        ]);
+        let zip = build_zip(&[("book.fb2", &fb2), ("zzz.png", b"not really a png")]);
         let (name, _) = read_first_image(zip).expect("fb2.zip read");
         assert_eq!(name, "inside.png");
     }
@@ -1132,8 +1119,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         assert_eq!(name, "cover.png");
         // Round-trip: decoded bytes should still parse as the
         // original 2×2 PNG.
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode MOBI cover");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode MOBI cover");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
     }
@@ -1181,8 +1167,8 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         let mut buf = Vec::new();
         {
             let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
-            let opts = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
+            let opts =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
             // EPUB spec: `mimetype` MUST be the first entry, stored
             // (not compressed), with the literal content below.
@@ -1241,8 +1227,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         );
         let (name, bytes) = read_first_image(epub).expect("EPUB read");
         assert_eq!(name, "OEBPS/images/front.png");
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode EPUB cover");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode EPUB cover");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
     }
@@ -1285,10 +1270,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
             standard_container_xml(),
             "OEBPS/content.opf",
             opf,
-            &[
-                ("OEBPS/page1.png", &png),
-                ("OEBPS/page2.png", &png),
-            ],
+            &[("OEBPS/page1.png", &png), ("OEBPS/page2.png", &png)],
         );
         // The generic scan should pick page1.png via natural sort.
         let (name, _) = read_first_image(epub).expect("EPUB read");
@@ -1342,18 +1324,14 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         // Some EPUBs put the OPF at the ZIP root. Make sure the
         // empty parent_dir case still resolves hrefs correctly.
         let png = make_tiny_png();
-        let container = r#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#;
+        let container =
+            r#"<container><rootfiles><rootfile full-path="content.opf"/></rootfiles></container>"#;
         let opf = r#"<package version="3.0">
   <manifest>
     <item id="c" href="cover.png" properties="cover-image"/>
   </manifest>
 </package>"#;
-        let epub = build_epub(
-            container,
-            "content.opf",
-            opf,
-            &[("cover.png", &png)],
-        );
+        let epub = build_epub(container, "content.opf", opf, &[("cover.png", &png)]);
         let (name, _) = read_first_image(epub).expect("EPUB read");
         assert_eq!(name, "cover.png");
     }
@@ -1362,10 +1340,7 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
     fn plain_zip_still_works_after_epub_fast_path() {
         // Regression: a plain ZIP without container.xml must not be
         // affected by the EPUB code path.
-        let zip = build_zip(&[
-            ("page01.jpg", b"AAA"),
-            ("page02.jpg", b"BBB"),
-        ]);
+        let zip = build_zip(&[("page01.jpg", b"AAA"), ("page02.jpg", b"BBB")]);
         let (name, _) = read_first_image(zip).expect("plain ZIP read");
         assert_eq!(name, "page01.jpg");
     }
@@ -1374,13 +1349,11 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
     fn rar_reads_single_image_entry() {
         let png = make_tiny_png();
         let rar = build_minimal_rar4("01.png", &png);
-        let (name, bytes) = read_first_image(Cursor::new(rar))
-            .expect("RAR read_first_image");
+        let (name, bytes) = read_first_image(Cursor::new(rar)).expect("RAR read_first_image");
         assert_eq!(name, "01.png");
         // The bytes round-tripped through unrar should still decode
         // as a valid PNG with the dimensions we put in.
-        let img = crate::decode::decode_with_limits(&name, &bytes)
-            .expect("decode RAR entry");
+        let img = crate::decode::decode_with_limits(&name, &bytes).expect("decode RAR entry");
         assert_eq!(img.width(), 2);
         assert_eq!(img.height(), 2);
     }

@@ -30,18 +30,17 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::OnceLock;
 
-use windows::core::{implement, w, IUnknown, Interface, Result, GUID, PCWSTR};
 use windows::Win32::Foundation::{
     BOOL, CLASS_E_NOAGGREGATION, COLORREF, E_FAIL, E_NOINTERFACE, E_POINTER, HINSTANCE, HWND,
     LPARAM, LRESULT, RECT, S_FALSE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint,
-    FillRect, GetSysColor, InvalidateRect, SelectObject, COLOR_WINDOW, HBITMAP, HBRUSH, HGDIOBJ,
-    PAINTSTRUCT, SRCCOPY,
+    BeginPaint, BitBlt, COLOR_WINDOW, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject,
+    EndPaint, FillRect, GetSysColor, HBITMAP, HBRUSH, HGDIOBJ, InvalidateRect, PAINTSTRUCT,
+    SRCCOPY, SelectObject,
 };
 use windows::Win32::System::Com::{IClassFactory, IClassFactory_Impl, IStream};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -54,11 +53,12 @@ use windows::Win32::UI::Shell::PropertiesSystem::{
 };
 use windows::Win32::UI::Shell::{IPreviewHandler, IPreviewHandler_Impl};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW, LoadCursorW,
-    MoveWindow, RegisterClassExW, SetParent, SetWindowLongPtrW, CREATESTRUCTW, CS_HREDRAW,
-    CS_VREDRAW, GWLP_USERDATA, IDC_ARROW, MSG, WINDOW_EX_STYLE, WM_DESTROY, WM_ERASEBKGND,
+    CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, MSG, MoveWindow,
+    RegisterClassExW, SetParent, SetWindowLongPtrW, WINDOW_EX_STYLE, WM_DESTROY, WM_ERASEBKGND,
     WM_NCCREATE, WM_PAINT, WNDCLASSEXW, WS_CHILD, WS_VISIBLE,
 };
+use windows::core::{GUID, IUnknown, Interface, PCWSTR, Result, implement, w};
 
 use crate::{alog, archive, bitmap, decode, stream::ComStreamReader};
 
@@ -71,8 +71,7 @@ use crate::{alog, archive, bitmap, decode, stream::ComStreamReader};
 /// `CLSID_ARCTHUMB_PROVIDER` (the thumbnail provider) so the two
 /// classes register as separate COM objects and can be toggled
 /// independently.
-pub const CLSID_ARCTHUMB_PREVIEW: GUID =
-    GUID::from_u128(0x8C7C1E5F_3D4A_4E2B_9F1A_7B5D6E8F9A0C);
+pub const CLSID_ARCTHUMB_PREVIEW: GUID = GUID::from_u128(0x8C7C1E5F_3D4A_4E2B_9F1A_7B5D6E8F9A0C);
 
 #[implement(IClassFactory)]
 pub struct ArcThumbPreviewClassFactory;
@@ -309,16 +308,20 @@ impl IPreviewHandler_Impl for ArcThumbPreviewHandler_Impl {
 
             // 2. Reuse the existing decoder pipeline.
             let reader = ComStreamReader::new(stream);
-            let (name, bytes) = archive::read_first_image(reader)
-                .map_err(|e| {
-                    alog!("Preview: archive read failed: {e}");
-                    windows::core::Error::from_hresult(E_FAIL)
-                })?;
+            let (name, bytes) = archive::read_first_image(reader).map_err(|e| {
+                alog!("Preview: archive read failed: {e}");
+                windows::core::Error::from_hresult(E_FAIL)
+            })?;
             let img = decode::decode_with_limits(&name, &bytes).map_err(|e| {
                 alog!("Preview: decode failed: {e}");
                 windows::core::Error::from_hresult(E_FAIL)
             })?;
-            alog!("Preview: decoded {}x{} from {}", img.width(), img.height(), name);
+            alog!(
+                "Preview: decoded {}x{} from {}",
+                img.width(),
+                img.height(),
+                name
+            );
             *self.this.source.borrow_mut() = Some(img);
 
             // 3. Create the child window if we don't have one yet.
@@ -398,8 +401,7 @@ impl ArcThumbPreviewHandler_Impl {
 
         // Pass a pointer to the user struct (`self.this`) so the
         // window proc can recover us via GWLP_USERDATA in WM_NCCREATE.
-        let user_ptr: *const ArcThumbPreviewHandler =
-            &self.this as *const ArcThumbPreviewHandler;
+        let user_ptr: *const ArcThumbPreviewHandler = &self.this as *const ArcThumbPreviewHandler;
 
         let hinstance: HINSTANCE = unsafe {
             GetModuleHandleW(None)
@@ -485,8 +487,7 @@ unsafe extern "system" fn preview_wnd_proc(
                 DefWindowProcW(hwnd, msg, wparam, lparam)
             }
             WM_PAINT => {
-                let ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ArcThumbPreviewHandler;
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const ArcThumbPreviewHandler;
                 // Wrap the body in catch_unwind so a panic in resize/GDI
                 // can't escape into prevhost's window message loop.
                 let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -572,9 +573,7 @@ fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler) {
                 unsafe {
                     let mem_dc = CreateCompatibleDC(hdc);
                     let old = SelectObject(mem_dc, HGDIOBJ(c.hbitmap.0));
-                    let _ = BitBlt(
-                        hdc, off_x, off_y, c.width, c.height, mem_dc, 0, 0, SRCCOPY,
-                    );
+                    let _ = BitBlt(hdc, off_x, off_y, c.width, c.height, mem_dc, 0, 0, SRCCOPY);
                     SelectObject(mem_dc, old);
                     let _ = DeleteDC(mem_dc);
                 }

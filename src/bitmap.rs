@@ -6,11 +6,11 @@
 
 use std::ffi::c_void;
 
-use windows::core::{Error, Result};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::Graphics::Gdi::{
-    CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateDIBSection, DIB_RGB_COLORS, HBITMAP,
 };
+use windows::core::{Error, Result};
 
 /// Convert an `image::RgbaImage` to an HBITMAP suitable for returning
 /// from `IThumbnailProvider::GetThumbnail` with `WTSAT_ARGB`.
@@ -34,9 +34,7 @@ pub fn from_rgba(img: &image::RgbaImage) -> Result<HBITMAP> {
     bi.bmiHeader.biCompression = BI_RGB.0;
 
     let mut bits: *mut c_void = std::ptr::null_mut();
-    let hbmp = unsafe {
-        CreateDIBSection(None, &bi, DIB_RGB_COLORS, &mut bits, None, 0)?
-    };
+    let hbmp = unsafe { CreateDIBSection(None, &bi, DIB_RGB_COLORS, &mut bits, None, 0)? };
     if bits.is_null() {
         return Err(Error::from_hresult(E_FAIL));
     }
@@ -72,7 +70,7 @@ fn premul(c: u8, a: u8) -> u8 {
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};
-    use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HGDIOBJ};
+    use windows::Win32::Graphics::Gdi::{BITMAP, DeleteObject, GetObjectW, HGDIOBJ};
 
     /// Helper: build a tiny RgbaImage filled with the given pixel.
     fn solid(w: u32, h: u32, px: [u8; 4]) -> image::RgbaImage {

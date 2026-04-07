@@ -9,8 +9,8 @@
 //! toggling). Application install/uninstall is the installer's job and
 //! isn't surfaced here, so the string table stays small.
 
-use winreg::enums::*;
 use winreg::RegKey;
+use winreg::enums::*;
 
 pub struct Strings {
     pub window_title: &'static str,

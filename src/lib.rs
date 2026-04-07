@@ -20,9 +20,9 @@ mod stream;
 
 use std::panic::catch_unwind;
 
-use windows::core::{Interface, GUID, HRESULT};
 use windows::Win32::Foundation::{E_FAIL, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::IClassFactory;
+use windows::core::{GUID, HRESULT, Interface};
 
 pub use com::CLSID_ARCTHUMB_PROVIDER;
 pub use preview::CLSID_ARCTHUMB_PREVIEW;
@@ -51,7 +51,7 @@ fn guard<F: FnOnce() -> HRESULT + std::panic::UnwindSafe>(f: F) -> HRESULT {
 /// 1. Check the requested CLSID is ours (we only host one class).
 /// 2. Hand back an `IClassFactory` that knows how to create `ArcThumbProvider`s.
 #[unsafe(no_mangle)]
-pub extern "system" fn DllGetClassObject(
+pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,
     riid: *const GUID,
     ppv: *mut *mut core::ffi::c_void,

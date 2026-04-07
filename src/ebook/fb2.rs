@@ -41,8 +41,8 @@
 //! definition. Only Russian narrative text in `<body>` would be
 //! garbled, and we never read it.
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
 use quick_xml::reader::Reader;
