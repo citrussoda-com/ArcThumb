@@ -55,11 +55,21 @@ fn cli_install() -> i32 {
         Ok(p) => p,
         Err(_) => return 2,
     };
+    // Both COM classes (thumbnail provider + preview handler) are
+    // registered together by the installer so the user gets both
+    // features by default. The GUI's "Enable preview pane" checkbox
+    // can later be unchecked to remove just the preview handler.
     if arcthumb::registry::register_clsid(&dll_path).is_err() {
+        return 3;
+    }
+    if arcthumb::registry::register_preview_clsid(&dll_path).is_err() {
         return 3;
     }
     for ext in arcthumb::registry::EXTENSIONS {
         if arcthumb::registry::register_extension(ext).is_err() {
+            return 4;
+        }
+        if arcthumb::registry::register_preview_extension(ext).is_err() {
             return 4;
         }
     }
@@ -69,8 +79,10 @@ fn cli_install() -> i32 {
 fn cli_uninstall() -> i32 {
     for ext in arcthumb::registry::EXTENSIONS {
         let _ = arcthumb::registry::unregister_extension(ext);
+        let _ = arcthumb::registry::unregister_preview_extension(ext);
     }
     let _ = arcthumb::registry::unregister_clsid();
+    let _ = arcthumb::registry::unregister_preview_clsid();
     0
 }
 

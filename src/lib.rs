@@ -13,6 +13,7 @@ mod decode;
 mod ebook;
 mod limits;
 mod log;
+mod preview;
 pub mod registry;
 pub mod settings;
 mod stream;
@@ -24,6 +25,7 @@ use windows::Win32::Foundation::{E_FAIL, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::System::Com::IClassFactory;
 
 pub use com::CLSID_ARCTHUMB_PROVIDER;
+pub use preview::CLSID_ARCTHUMB_PREVIEW;
 
 /// COM error: "no class factory for the requested CLSID".
 const CLASS_E_CLASSNOTAVAILABLE: HRESULT = HRESULT(0x80040111u32 as i32);
@@ -59,11 +61,15 @@ pub extern "system" fn DllGetClassObject(
             return E_POINTER;
         }
         unsafe {
-            if *rclsid != CLSID_ARCTHUMB_PROVIDER {
-                return CLASS_E_CLASSNOTAVAILABLE;
+            if *rclsid == CLSID_ARCTHUMB_PROVIDER {
+                let factory: IClassFactory = com::ArcThumbClassFactory.into();
+                factory.query(&*riid, ppv)
+            } else if *rclsid == CLSID_ARCTHUMB_PREVIEW {
+                let factory: IClassFactory = preview::ArcThumbPreviewClassFactory.into();
+                factory.query(&*riid, ppv)
+            } else {
+                CLASS_E_CLASSNOTAVAILABLE
             }
-            let factory: IClassFactory = com::ArcThumbClassFactory.into();
-            factory.query(&*riid, ppv)
         }
     })
 }

@@ -30,17 +30,23 @@ use std::io::Cursor;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 
-use windows::core::{Interface, GUID, HRESULT, PCWSTR};
-use windows::Win32::Foundation::{FreeLibrary, HMODULE, S_OK};
+use windows::core::{w, Interface, GUID, HRESULT, PCWSTR};
+use windows::Win32::Foundation::{FreeLibrary, HINSTANCE, HMODULE, HWND, RECT, S_OK};
 use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP, HBITMAP, HGDIOBJ};
 use windows::Win32::System::Com::{
     CoInitializeEx, CoUninitialize, IClassFactory, IStream, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::Ole::{IObjectWithSite, IOleWindow};
 use windows::Win32::UI::Shell::PropertiesSystem::IInitializeWithStream;
-use windows::Win32::UI::Shell::{IThumbnailProvider, SHCreateMemStream, WTS_ALPHATYPE};
+use windows::Win32::UI::Shell::{
+    IPreviewHandler, IThumbnailProvider, SHCreateMemStream, WTS_ALPHATYPE,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DestroyWindow, IsWindow, CW_USEDEFAULT, WINDOW_EX_STYLE, WS_POPUP,
+};
 
-use arcthumb::CLSID_ARCTHUMB_PROVIDER;
+use arcthumb::{CLSID_ARCTHUMB_PREVIEW, CLSID_ARCTHUMB_PROVIDER};
 
 /// Signature of `DllGetClassObject` as it is exported from `arcthumb.dll`.
 type DllGetClassObjectFn = unsafe extern "system" fn(
@@ -335,6 +341,171 @@ fn dll_can_unload_now_returns_s_false() {
     let hr = unsafe { f() };
     // S_FALSE = 0x00000001
     assert_eq!(hr.0, 1, "expected S_FALSE, got {hr:?}");
+}
+
+// =============================================================================
+// IPreviewHandler integration tests
+// =============================================================================
+
+/// Helper that loads the DLL, resolves DllGetClassObject, and asks
+/// for the preview-handler class factory. Returns the loaded DLL
+/// guard and the IClassFactory so the caller can keep both alive.
+fn load_preview_factory() -> (LoadedDll, IClassFactory) {
+    let dll_path = locate_dll();
+    assert!(
+        dll_path.exists(),
+        "arcthumb.dll not found at {}",
+        dll_path.display()
+    );
+
+    let wide = to_wide(&dll_path);
+    let module = unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) }
+        .expect("LoadLibraryW failed");
+    let dll_guard = LoadedDll(module);
+
+    let proc = unsafe { GetProcAddress(module, windows::core::s!("DllGetClassObject")) }
+        .expect("DllGetClassObject not exported");
+    let dll_get_class_object: DllGetClassObjectFn =
+        unsafe { std::mem::transmute(proc) };
+
+    let mut factory_ptr: *mut c_void = std::ptr::null_mut();
+    let hr = unsafe {
+        dll_get_class_object(
+            &CLSID_ARCTHUMB_PREVIEW,
+            &IClassFactory::IID,
+            &mut factory_ptr,
+        )
+    };
+    assert_eq!(hr, S_OK, "DllGetClassObject(preview) failed: {hr:?}");
+    assert!(!factory_ptr.is_null(), "preview factory pointer is null");
+    let factory: IClassFactory = unsafe { IClassFactory::from_raw(factory_ptr) };
+    (dll_guard, factory)
+}
+
+/// Build a hidden top-level window we can use as the preview pane's
+/// host. WS_POPUP without WS_VISIBLE means it's never shown — we
+/// just need an HWND that lives long enough for `DoPreview` to
+/// parent its child against.
+fn create_hidden_parent() -> HWND {
+    let hinstance: HINSTANCE = unsafe {
+        GetModuleHandleW(None)
+            .map(|h| HINSTANCE(h.0))
+            .unwrap_or_default()
+    };
+    // Reuse the standard "STATIC" class so we don't have to register
+    // our own — STATIC is always present in user32.dll.
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("ArcThumb test parent"),
+            WS_POPUP,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            400,
+            400,
+            None,
+            None,
+            hinstance,
+            None,
+        )
+    }
+    .expect("CreateWindowExW(STATIC) failed");
+    assert!(!hwnd.is_invalid());
+    hwnd
+}
+
+#[test]
+fn preview_class_factory_creates_handler() {
+    let _com = ComApartment::enter();
+    let (_dll, factory) = load_preview_factory();
+
+    // CreateInstance should return an IUnknown that can be cast to
+    // each of the four interfaces our preview handler implements.
+    let unknown: windows::core::IUnknown = unsafe {
+        factory
+            .CreateInstance(None)
+            .expect("CreateInstance failed")
+    };
+    let _preview: IPreviewHandler = unknown.cast().expect("cast IPreviewHandler");
+    let _init: IInitializeWithStream =
+        unknown.cast().expect("cast IInitializeWithStream");
+    let _site: IObjectWithSite = unknown.cast().expect("cast IObjectWithSite");
+    let _ole: IOleWindow = unknown.cast().expect("cast IOleWindow");
+}
+
+#[test]
+fn preview_handler_end_to_end() {
+    let _com = ComApartment::enter();
+    let (_dll, factory) = load_preview_factory();
+
+    // Get the four interfaces.
+    let unknown: windows::core::IUnknown = unsafe {
+        factory
+            .CreateInstance(None)
+            .expect("CreateInstance failed")
+    };
+    let preview: IPreviewHandler = unknown.cast().expect("IPreviewHandler");
+    let init: IInitializeWithStream = unknown.cast().expect("IInitializeWithStream");
+    let ole: IOleWindow = unknown.cast().expect("IOleWindow");
+
+    // Build the same in-memory ZIP fixture the thumbnail end-to-end
+    // test uses.
+    let zip_bytes = make_test_zip();
+    let stream: IStream = unsafe { SHCreateMemStream(Some(&zip_bytes)) }
+        .expect("SHCreateMemStream returned None");
+    unsafe { init.Initialize(&stream, 0).expect("Initialize failed") };
+
+    // Make a hidden parent and parent the preview to it.
+    let parent = create_hidden_parent();
+    let rect = RECT {
+        left: 0,
+        top: 0,
+        right: 400,
+        bottom: 400,
+    };
+    unsafe {
+        preview
+            .SetWindow(parent, &rect)
+            .expect("SetWindow failed");
+        preview.SetRect(&rect).expect("SetRect failed");
+        preview.DoPreview().expect("DoPreview failed");
+    }
+
+    // GetWindow should now return our child window.
+    let child = unsafe { ole.GetWindow().expect("GetWindow failed") };
+    assert!(!child.is_invalid(), "child HWND is invalid");
+    let alive = unsafe { IsWindow(child) };
+    assert!(alive.as_bool(), "child window not alive after DoPreview");
+
+    // Unload should tear it down.
+    unsafe { preview.Unload().expect("Unload failed") };
+    let alive_after = unsafe { IsWindow(child) };
+    assert!(
+        !alive_after.as_bool(),
+        "child window should be destroyed by Unload"
+    );
+
+    // Cleanup the parent we created.
+    unsafe {
+        let _ = DestroyWindow(parent);
+    }
+}
+
+#[test]
+fn preview_handler_unload_is_safe_without_dopreview() {
+    let _com = ComApartment::enter();
+    let (_dll, factory) = load_preview_factory();
+
+    let unknown: windows::core::IUnknown = unsafe {
+        factory
+            .CreateInstance(None)
+            .expect("CreateInstance failed")
+    };
+    let preview: IPreviewHandler = unknown.cast().expect("IPreviewHandler");
+
+    // Calling Unload before DoPreview must succeed without panicking.
+    unsafe { preview.Unload().expect("Unload before DoPreview should succeed") };
 }
 
 // Suppress dead-code warnings for the unused OsStringExt import on

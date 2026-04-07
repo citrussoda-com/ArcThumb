@@ -44,9 +44,22 @@ use winreg::RegKey;
 /// `com.rs`). **Never change** — baked into users' registries.
 pub const CLSID_STR: &str = "{0F4F5659-D383-4945-A534-01E1EED1D23F}";
 
+/// String form of the ArcThumb preview handler CLSID (defined in
+/// `preview.rs`). **Never change** — baked into users' registries.
+pub const PREVIEW_CLSID_STR: &str = "{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}";
+
 /// Standard IID of `IThumbnailProvider`. Explorer looks under
 /// `.<ext>\ShellEx\<this IID>` to find the thumbnail handler.
 pub const IID_ITHUMBNAILPROVIDER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}";
+
+/// Standard IID of `IPreviewHandler`. Explorer looks under
+/// `.<ext>\ShellEx\<this IID>` to find the preview handler.
+pub const IID_IPREVIEWHANDLER: &str = "{8895B1C6-B41F-4C1C-A562-0D564250836F}";
+
+/// AppID of the standard preview-host surrogate. Setting this on
+/// the CLSID key tells COM to load our DLL inside `prevhost.exe`
+/// (per-user, no admin needed; isolation handled by Windows).
+const PREVHOST_APPID: &str = "{534A1E02-D58F-44f0-B58B-36CBED287C7C}";
 
 /// File extensions that ArcThumb handles.
 /// The `.cb?` variants are the comic-book archive conventions used by
@@ -103,6 +116,22 @@ fn ext_shellex_path(ext: &str) -> String {
 /// Production-flavoured wrapper for `clsid_root_path_under`.
 fn clsid_root_path() -> String {
     clsid_root_path_under(CLSID_BASE, CLSID_STR)
+}
+
+/// Build the registry sub-path for a given extension's preview-handler
+/// ShellEx slot, rooted at `classes_base`.
+fn preview_ext_shellex_path_under(classes_base: &str, ext: &str) -> String {
+    format!("{classes_base}\\{ext}\\ShellEx\\{IID_IPREVIEWHANDLER}")
+}
+
+/// Production-flavoured wrapper for the preview-handler ShellEx slot.
+fn preview_ext_shellex_path(ext: &str) -> String {
+    preview_ext_shellex_path_under(CLASSES_BASE, ext)
+}
+
+/// Production-flavoured wrapper for the preview-handler CLSID root.
+fn preview_clsid_root_path() -> String {
+    clsid_root_path_under(CLSID_BASE, PREVIEW_CLSID_STR)
 }
 
 /// Resolve the calling DLL's own path via `GetModuleHandleExW` — only
@@ -189,6 +218,21 @@ fn read_inproc_default(clsid_root: &str) -> Option<PathBuf> {
     }
 }
 
+/// Like `register_clsid_at`, but additionally writes the `AppID`
+/// value pointing at `prevhost.exe`. Used for the preview handler.
+fn register_preview_clsid_at(clsid_root: &str, dll_path: &Path) -> io::Result<()> {
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (clsid_key, _) = hkcu.create_subkey(clsid_root)?;
+    clsid_key.set_value("", &"ArcThumb Preview Handler")?;
+    clsid_key.set_value("AppID", &PREVHOST_APPID.to_string())?;
+
+    let (inproc, _) = clsid_key.create_subkey("InprocServer32")?;
+    let dll_path_str = dll_path.to_string_lossy().into_owned();
+    inproc.set_value("", &dll_path_str)?;
+    inproc.set_value("ThreadingModel", &"Apartment")?;
+    Ok(())
+}
+
 // =============================================================================
 // Public production API
 // =============================================================================
@@ -235,14 +279,52 @@ pub fn read_registered_dll_path() -> Option<PathBuf> {
 }
 
 // =============================================================================
+// Preview-handler public API
+// =============================================================================
+
+/// Write the preview-handler CLSID subtree, including the AppID
+/// pointing at prevhost.exe and the InprocServer32 entry.
+pub fn register_preview_clsid(dll_path: &Path) -> io::Result<()> {
+    register_preview_clsid_at(&preview_clsid_root_path(), dll_path)
+}
+
+/// Delete the preview-handler CLSID subtree. Best effort.
+pub fn unregister_preview_clsid() -> io::Result<()> {
+    unregister_clsid_at(&preview_clsid_root_path())
+}
+
+/// Wire one extension to the preview-handler CLSID via its
+/// `IPreviewHandler` ShellEx slot.
+pub fn register_preview_extension(ext: &str) -> io::Result<()> {
+    register_extension_at(&preview_ext_shellex_path(ext), PREVIEW_CLSID_STR)
+}
+
+/// Remove the preview-handler ShellEx binding for an extension.
+pub fn unregister_preview_extension(ext: &str) -> io::Result<()> {
+    unregister_extension_at(&preview_ext_shellex_path(ext))
+}
+
+/// True iff the preview-handler `InprocServer32` subkey exists. Used
+/// as the source of truth for the GUI's "Enable preview pane" toggle.
+pub fn is_preview_enabled() -> bool {
+    is_subkey_present(&format!(
+        "{}\\InprocServer32",
+        preview_clsid_root_path()
+    ))
+}
+
+// =============================================================================
 // Backward-compatible wrappers used by DllRegisterServer / DllUnregisterServer
 // =============================================================================
 
 pub fn register() -> io::Result<()> {
     let dll_path_str = get_dll_path_from_module()?;
-    register_clsid(Path::new(&dll_path_str))?;
+    let dll_path = Path::new(&dll_path_str);
+    register_clsid(dll_path)?;
+    register_preview_clsid(dll_path)?;
     for ext in EXTENSIONS {
         register_extension(ext)?;
+        register_preview_extension(ext)?;
     }
     Ok(())
 }
@@ -250,8 +332,10 @@ pub fn register() -> io::Result<()> {
 pub fn unregister() -> io::Result<()> {
     for ext in EXTENSIONS {
         let _ = unregister_extension(ext);
+        let _ = unregister_preview_extension(ext);
     }
     let _ = unregister_clsid();
+    let _ = unregister_preview_clsid();
     Ok(())
 }
 
@@ -434,5 +518,113 @@ mod tests {
     fn clsid_root_path_under_uses_provided_root() {
         let p = clsid_root_path_under("Foo\\CLSID", "{XYZ}");
         assert_eq!(p, "Foo\\CLSID\\{XYZ}");
+    }
+
+    #[test]
+    fn preview_ext_shellex_path_format() {
+        assert_eq!(
+            preview_ext_shellex_path(".zip"),
+            "Software\\Classes\\.zip\\ShellEx\\{8895B1C6-B41F-4C1C-A562-0D564250836F}"
+        );
+    }
+
+    #[test]
+    fn preview_clsid_root_path_format() {
+        assert_eq!(
+            preview_clsid_root_path(),
+            "Software\\Classes\\CLSID\\{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}"
+        );
+    }
+
+    #[test]
+    fn preview_clsid_register_roundtrip() {
+        let sandbox = unique_sandbox("preview_clsid");
+        let _guard = SandboxGuard(sandbox.clone());
+        let clsid_root = format!("{sandbox}\\{{TEST-PREVIEW}}");
+
+        assert!(!is_subkey_present(&clsid_root));
+
+        let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
+        register_preview_clsid_at(&clsid_root, &dll_path).expect("register");
+
+        // InprocServer32 → DLL path round-trips.
+        let read_back = read_inproc_default(&clsid_root).expect("read back");
+        assert_eq!(read_back, dll_path);
+
+        // ThreadingModel = Apartment.
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let inproc = hkcu
+            .open_subkey(format!("{clsid_root}\\InprocServer32"))
+            .expect("open inproc");
+        let threading: String = inproc
+            .get_value("ThreadingModel")
+            .expect("read ThreadingModel");
+        assert_eq!(threading, "Apartment");
+
+        // AppID = the standard prevhost surrogate so the DLL gets
+        // hosted in prevhost.exe instead of inside Explorer.
+        let clsid_key = hkcu.open_subkey(&clsid_root).expect("open clsid");
+        let app_id: String = clsid_key.get_value("AppID").expect("read AppID");
+        assert_eq!(app_id, "{534A1E02-D58F-44f0-B58B-36CBED287C7C}");
+
+        unregister_clsid_at(&clsid_root).expect("unregister");
+        assert!(!is_subkey_present(&clsid_root));
+    }
+
+    #[test]
+    fn preview_extension_register_roundtrip() {
+        let sandbox = unique_sandbox("preview_ext");
+        let _guard = SandboxGuard(sandbox.clone());
+        let path = preview_ext_shellex_path_under(&sandbox, ".epub");
+
+        assert!(!is_subkey_present(&path));
+
+        register_extension_at(&path, PREVIEW_CLSID_STR).expect("register");
+        assert!(is_subkey_present(&path));
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey(&path).expect("open after register");
+        let val: String = key.get_value("").expect("read default");
+        assert_eq!(val, PREVIEW_CLSID_STR);
+
+        unregister_extension_at(&path).expect("unregister");
+        assert!(!is_subkey_present(&path));
+    }
+
+    #[test]
+    fn full_install_includes_both_handlers_for_all_extensions() {
+        // The production `register()` writes both the thumbnail and
+        // the preview handler keys for every extension. This test
+        // mirrors that loop against the sandbox so a future addition
+        // (e.g. `.azw4`) is automatically covered.
+        let sandbox = unique_sandbox("dual");
+        let _guard = SandboxGuard(sandbox.clone());
+
+        // Register both fake CLSIDs.
+        let thumb_clsid_root = format!("{sandbox}\\CLSID\\{CLSID_STR}");
+        let preview_clsid_root = format!("{sandbox}\\CLSID\\{PREVIEW_CLSID_STR}");
+        register_clsid_at(&thumb_clsid_root, std::path::Path::new(r"C:\fake.dll"))
+            .expect("thumb clsid register");
+        register_preview_clsid_at(&preview_clsid_root, std::path::Path::new(r"C:\fake.dll"))
+            .expect("preview clsid register");
+
+        for ext in EXTENSIONS {
+            let thumb_path = ext_shellex_path_under(&sandbox, ext);
+            let preview_path = preview_ext_shellex_path_under(&sandbox, ext);
+            register_extension_at(&thumb_path, CLSID_STR).expect(ext);
+            register_extension_at(&preview_path, PREVIEW_CLSID_STR).expect(ext);
+            assert!(is_subkey_present(&thumb_path), "{ext} thumb missing");
+            assert!(is_subkey_present(&preview_path), "{ext} preview missing");
+        }
+
+        // Tear down both.
+        for ext in EXTENSIONS {
+            let thumb_path = ext_shellex_path_under(&sandbox, ext);
+            let preview_path = preview_ext_shellex_path_under(&sandbox, ext);
+            unregister_extension_at(&thumb_path).expect(ext);
+            unregister_extension_at(&preview_path).expect(ext);
+        }
+        unregister_clsid_at(&thumb_clsid_root).expect("thumb unregister");
+        unregister_clsid_at(&preview_clsid_root).expect("preview unregister");
     }
 }

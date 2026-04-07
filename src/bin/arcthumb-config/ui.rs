@@ -59,7 +59,7 @@ fn s() -> &'static Strings {
 #[derive(Default, NwgUi)]
 pub struct ConfigApp {
     #[nwg_control(
-        size: (444, 304),
+        size: (444, 336),
         position: (300, 200),
         title: "ArcThumb Configuration",
         flags: "WINDOW|VISIBLE"
@@ -141,6 +141,17 @@ pub struct ConfigApp {
     )]
     cb_prefer_cover: nwg::CheckBox,
 
+    // Global toggle for the IPreviewHandler implementation. When
+    // checked, applying the dialog (un)registers the preview-handler
+    // CLSID and (un)binds it on every supported extension. Independent
+    // of the per-extension thumbnail toggles above.
+    #[nwg_control(
+        text: "Enable preview pane (Alt+P)",
+        size: (420, 22),
+        position: (14, 260)
+    )]
+    cb_enable_preview: nwg::CheckBox,
+
     // ------------------------------------------------------------------
     // OK / Cancel / Apply — right-aligned with 12 px right margin,
     // 6 px gaps between buttons, 80 px each.
@@ -149,15 +160,15 @@ pub struct ConfigApp {
     //     6 px gap       → Cancel right = 346, left = 266
     //     6 px gap       → OK right = 260, left = 180
     // ------------------------------------------------------------------
-    #[nwg_control(text: "OK", size: (80, 26), position: (180, 268))]
+    #[nwg_control(text: "OK", size: (80, 26), position: (180, 300))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_ok] )]
     ok_btn: nwg::Button,
 
-    #[nwg_control(text: "Cancel", size: (80, 26), position: (266, 268))]
+    #[nwg_control(text: "Cancel", size: (80, 26), position: (266, 300))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_cancel] )]
     cancel_btn: nwg::Button,
 
-    #[nwg_control(text: "Apply", size: (80, 26), position: (352, 268))]
+    #[nwg_control(text: "Apply", size: (80, 26), position: (352, 300))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_apply] )]
     apply_btn: nwg::Button,
 
@@ -205,13 +216,18 @@ impl ConfigApp {
         self.cb_prefer_cover
             .set_check_state(bool_to_check(model.settings.prefer_cover_names));
 
+        // Preview pane toggle
+        self.cb_enable_preview.set_text(strings.cb_enable_preview);
+        self.cb_enable_preview
+            .set_check_state(bool_to_check(model.preview_enabled));
+
         // Bottom buttons
         self.ok_btn.set_text(strings.btn_ok);
         self.cancel_btn.set_text(strings.btn_cancel);
         self.apply_btn.set_text(strings.btn_apply);
     }
 
-    fn collect_from_ui(&self) -> (Settings, [bool; EXT_COUNT]) {
+    fn collect_from_ui(&self) -> (Settings, [bool; EXT_COUNT], bool) {
         let sort_order = if self.rb_natural.check_state() == nwg::RadioButtonState::Checked {
             SortOrder::Natural
         } else {
@@ -228,7 +244,9 @@ impl ConfigApp {
         for (i, cb) in checkboxes.iter().enumerate() {
             ext_enabled[i] = check_to_bool(cb.check_state());
         }
-        (settings, ext_enabled)
+
+        let preview_enabled = check_to_bool(self.cb_enable_preview.check_state());
+        (settings, ext_enabled, preview_enabled)
     }
 
     fn extension_checkboxes(&self) -> [&nwg::CheckBox; EXT_COUNT] {
@@ -274,7 +292,7 @@ impl ConfigApp {
 
     fn apply_changes(&self) -> bool {
         let strings = s();
-        let (new_settings, new_ext_enabled) = self.collect_from_ui();
+        let (new_settings, new_ext_enabled, new_preview_enabled) = self.collect_from_ui();
         let mut ok = true;
 
         // --- Settings (sort order + prefer cover)
@@ -314,6 +332,15 @@ impl ConfigApp {
             );
         }
 
+        // --- Preview pane handler (global toggle)
+        let old_preview = self.model.borrow().preview_enabled;
+        if old_preview != new_preview_enabled {
+            if let Err(e) = apply_preview_toggle(new_preview_enabled) {
+                self.error(strings.error_register, &format!("{e}"));
+                ok = false;
+            }
+        }
+
         self.reload_model();
         ok
     }
@@ -347,4 +374,24 @@ fn bool_to_check(b: bool) -> nwg::CheckBoxState {
 
 fn check_to_bool(c: nwg::CheckBoxState) -> bool {
     matches!(c, nwg::CheckBoxState::Checked)
+}
+
+/// Register or unregister the preview-handler CLSID + bind/unbind it
+/// across every supported extension. Called when the user flips the
+/// "Enable preview pane" checkbox and clicks Apply.
+fn apply_preview_toggle(enable: bool) -> std::io::Result<()> {
+    if enable {
+        let dll = crate::dll_path::resolve_dll_path()
+            .map_err(std::io::Error::other)?;
+        registry::register_preview_clsid(&dll)?;
+        for ext in registry::EXTENSIONS {
+            registry::register_preview_extension(ext)?;
+        }
+    } else {
+        for ext in registry::EXTENSIONS {
+            let _ = registry::unregister_preview_extension(ext);
+        }
+        let _ = registry::unregister_preview_clsid();
+    }
+    Ok(())
 }
