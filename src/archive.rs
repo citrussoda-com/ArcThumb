@@ -47,6 +47,10 @@ enum Format {
     /// `FictionBook` in the first 512 bytes — XML declarations may
     /// appear before the root element so we can't anchor at start.
     Fb2,
+    /// Amazon Kindle MOBI / AZW / AZW3. All three are PalmDB
+    /// containers with the type `BOOK` + creator `MOBI` at offset
+    /// 60..68 inside the PalmDB header.
+    Mobi,
     Unknown,
 }
 
@@ -84,6 +88,12 @@ fn detect_format(magic: &[u8]) -> Format {
     if magic.windows(11).any(|w| w == b"FictionBook") {
         return Format::Fb2;
     }
+    // MOBI / AZW / AZW3: PalmDB header has type "BOOK" at offset 60
+    // and creator "MOBI" at offset 64. The combined "BOOKMOBI" string
+    // at byte 60 uniquely identifies the format.
+    if magic.len() >= 68 && &magic[60..68] == b"BOOKMOBI" {
+        return Format::Mobi;
+    }
     Format::Unknown
 }
 
@@ -115,6 +125,7 @@ pub fn read_first_image<R: Read + Seek>(
         Format::Rar => rar_read_first_image(reader),
         Format::Tar => tar_read_first_image(reader),
         Format::Fb2 => fb2_read_first_image(reader),
+        Format::Mobi => mobi_read_first_image(reader),
         Format::Unknown => Err("unrecognised archive format".into()),
     }
 }
@@ -167,6 +178,20 @@ fn fb2_read_first_image<R: Read + Seek>(
     reader.read_to_end(&mut bytes)?;
     ebook::fb2::try_extract_cover(&bytes)
         .ok_or_else(|| "FB2 has no embedded cover image".into())
+}
+
+// =============================================================================
+// MOBI / AZW / AZW3 backend (PalmDB container with embedded images)
+// =============================================================================
+
+fn mobi_read_first_image<R: Read + Seek>(
+    mut reader: R,
+) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    ebook::mobi::try_extract_cover(&bytes)
+        .ok_or_else(|| "MOBI has no extractable cover image".into())
 }
 
 // =============================================================================
@@ -909,6 +934,218 @@ xmlns:l=\"http://www.w3.org/1999/xlink\">\n\
         let zip = build_zip(&[("page1.jpg", b"data")]);
         let (name, _) = read_first_image(zip).expect("plain ZIP read");
         assert_eq!(name, "page1.jpg");
+    }
+
+    // ---------------------------------------------------------------
+    // detect_format: MOBI / AZW / AZW3
+    // ---------------------------------------------------------------
+
+    /// Build a 68-byte stub that has the BOOKMOBI signature at the
+    /// expected PalmDB offset (60..68). Bytes before are zero.
+    fn mobi_stub_bytes() -> Vec<u8> {
+        let mut v = vec![0u8; 68];
+        v[60..68].copy_from_slice(b"BOOKMOBI");
+        v
+    }
+
+    #[test]
+    fn detect_mobi_via_bookmobi() {
+        assert_eq!(detect_format(&mobi_stub_bytes()), Format::Mobi);
+    }
+
+    #[test]
+    fn detect_mobi_requires_offset_60() {
+        // BOOKMOBI elsewhere in the buffer must NOT trigger MOBI
+        // detection — only the canonical PalmDB offset counts.
+        let mut v = vec![0u8; 68];
+        v[0..8].copy_from_slice(b"BOOKMOBI");
+        assert_eq!(detect_format(&v), Format::Unknown);
+    }
+
+    #[test]
+    fn detect_short_input_not_mobi() {
+        // Less than 68 bytes can't possibly carry a PalmDB header.
+        let v = vec![0u8; 60];
+        assert_eq!(detect_format(&v), Format::Unknown);
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: MOBI backend with a hand-crafted fixture
+    //
+    // We can't generate MOBI files programmatically with any Rust
+    // crate (the `mobi` crate is read-only) and we don't want to
+    // commit binary fixtures. Instead, this builder constructs the
+    // smallest possible MOBI that the upstream parser will accept,
+    // with a single image record carrying our test bytes.
+    //
+    // Layout (offsets in decimal):
+    //   0..78    PalmDB header (type=BOOK, creator=MOBI)
+    //   78..104  PdbRecords list (3 entries × 8 bytes + 2 extra)
+    //   104..120 PalmDoc header  (record 0 begins)
+    //   120..352 MOBI header
+    //   352..376 EXTH header (one CoverOffset=0 record)
+    //   376..377 Record 1 (1-byte text placeholder)
+    //   377..    Record 2 (image bytes)
+    //
+    // This drives `mobi::Mobi::new` end-to-end and exercises the
+    // EXTH 201 cover-lookup path in our backend.
+    // ---------------------------------------------------------------
+
+    fn build_minimal_mobi(image: &[u8]) -> Vec<u8> {
+        let num_records: u16 = 3;
+        let record_0_offset: u32 = 78 + 3 * 8 + 2; // 104
+        let palmdoc_len: u32 = 16;
+        let mobi_header_len: u32 = 232;
+        let exth_len: u32 = 24;
+        let record_1_offset: u32 = record_0_offset + palmdoc_len + mobi_header_len + exth_len;
+        let record_2_offset: u32 = record_1_offset + 1;
+
+        let mut out = Vec::with_capacity(record_2_offset as usize + image.len());
+
+        // ---- PalmDB header (78 bytes) ----
+        let mut name = [0u8; 32];
+        name[..4].copy_from_slice(b"test");
+        out.extend_from_slice(&name);
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(b"BOOK");
+        out.extend_from_slice(b"MOBI");
+        out.extend_from_slice(&3u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&num_records.to_be_bytes());
+        debug_assert_eq!(out.len(), 78);
+
+        // ---- PdbRecords list (3 × 8 + 2 = 26 bytes) ----
+        out.extend_from_slice(&record_0_offset.to_be_bytes());
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&record_1_offset.to_be_bytes());
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&record_2_offset.to_be_bytes());
+        out.extend_from_slice(&[0, 0, 0, 2]);
+        out.extend_from_slice(&[0, 0]);
+        debug_assert_eq!(out.len() as u32, record_0_offset);
+
+        // ---- PalmDoc header (16 bytes) ----
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.extend_from_slice(&4096u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+
+        // ---- MOBI header (232 bytes total) ----
+        out.extend_from_slice(b"MOBI");
+        out.extend_from_slice(&232u32.to_be_bytes());
+        out.extend_from_slice(&2u32.to_be_bytes());
+        out.extend_from_slice(&65001u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&6u32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        for _ in 0..6 {
+            out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        }
+        out.extend_from_slice(&2u32.to_be_bytes()); // first_non_book_index
+        // The upstream parser seeks (forward-only) to
+        // `records[0].offset + name_offset` after reading the headers
+        // so it can read `name_length` name bytes. We have a 0-byte
+        // name, but we still need the seek target to land at-or-after
+        // the current reader position (= end of EXTH, byte 376).
+        // record_0_offset (104) + name_offset (272) = 376. ✓
+        out.extend_from_slice(&272u32.to_be_bytes()); // name_offset
+        out.extend_from_slice(&0u32.to_be_bytes()); // name_length
+        out.extend_from_slice(&0u16.to_be_bytes()); // unused
+        out.push(0); // locale
+        out.push(9); // language_code = English
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&6u32.to_be_bytes());
+        out.extend_from_slice(&2u32.to_be_bytes()); // first_image_index
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0x40u32.to_be_bytes()); // exth_flags = HAS_EXTH
+        out.extend_from_slice(&[0u8; 32]);
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&[0u8; 8]);
+        out.extend_from_slice(&1u16.to_be_bytes());
+        out.extend_from_slice(&0u16.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+
+        // ---- EXTH header (24 bytes) ----
+        out.extend_from_slice(b"EXTH");
+        out.extend_from_slice(&24u32.to_be_bytes());
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(&201u32.to_be_bytes()); // CoverOffset
+        out.extend_from_slice(&12u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes()); // offset 0 → first_image_index
+        debug_assert_eq!(out.len() as u32, record_1_offset);
+
+        // ---- Record 1: 1-byte text placeholder ----
+        out.push(0u8);
+        debug_assert_eq!(out.len() as u32, record_2_offset);
+
+        // ---- Record 2: image bytes ----
+        out.extend_from_slice(image);
+
+        out
+    }
+
+    #[test]
+    fn mobi_fixture_passes_detect_format() {
+        let png = make_tiny_png();
+        let mobi = build_minimal_mobi(&png);
+        assert_eq!(detect_format(&mobi), Format::Mobi);
+    }
+
+    #[test]
+    fn mobi_extracts_cover_via_exth_201() {
+        let png = make_tiny_png();
+        let mobi = build_minimal_mobi(&png);
+        let (name, bytes) = read_first_image(Cursor::new(mobi)).expect("MOBI read");
+        // Synthesized name encodes the sniffed image format.
+        assert_eq!(name, "cover.png");
+        // Round-trip: decoded bytes should still parse as the
+        // original 2×2 PNG.
+        let img = crate::decode::decode_with_limits(&name, &bytes)
+            .expect("decode MOBI cover");
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 2);
+    }
+
+    #[test]
+    fn mobi_garbage_returns_error() {
+        // BOOKMOBI signature in the right place but everything else
+        // is junk → mobi crate's parser rejects it → backend returns
+        // an error (not a panic).
+        let mut bytes = mobi_stub_bytes();
+        bytes.extend_from_slice(&[0u8; 256]);
+        assert!(read_first_image(Cursor::new(bytes)).is_err());
     }
 
     #[test]

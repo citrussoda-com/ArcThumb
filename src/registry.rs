@@ -56,7 +56,8 @@ pub const IID_ITHUMBNAILPROVIDER: &str = "{E357FCCD-A995-4576-B01F-234630154E96}
 /// the cover image. `.fb2` is a raw XML document with base64-embedded
 /// images; the `.fb2.zip` distribution variant is caught implicitly
 /// by the `.zip` registration since Windows only sees the final
-/// extension on a double-suffixed file.
+/// extension on a double-suffixed file. `.mobi` / `.azw` / `.azw3`
+/// are Amazon Kindle ebook formats sharing a PalmDB container.
 pub const EXTENSIONS: &[&str] = &[
     ".zip", ".cbz",
     ".rar", ".cbr",
@@ -64,6 +65,7 @@ pub const EXTENSIONS: &[&str] = &[
     ".cbt",
     ".epub",
     ".fb2",
+    ".mobi", ".azw", ".azw3",
 ];
 
 // =============================================================================

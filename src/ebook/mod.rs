@@ -7,9 +7,9 @@
 //! Currently:
 //! - `epub` — EPUB 2 / EPUB 3 cover-image extraction via OPF metadata.
 //! - `fb2`  — FictionBook XML with base64-embedded `<binary>` images.
-//!
-//! Planned (Phase 5c):
-//! - `mobi` — Amazon Kindle (MOBI / AZW / AZW3) cover records.
+//! - `mobi` — Amazon Kindle (MOBI / AZW / AZW3) cover records via
+//!   EXTH 201, with first-image-record fallback.
 
 pub mod epub;
 pub mod fb2;
+pub mod mobi;

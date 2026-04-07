@@ -39,9 +39,9 @@ fn s() -> &'static Strings {
 //
 //   y=10   [Enabled extensions]   ← label at (14, 10)
 //   y=18             +------------------------------...+   ← frame top
-//   y=34             | [x] .zip [x] .cbz [x] .rar [x] .cbr  |
-//   y=62             | [x] .7z  [x] .cb7 [x] .cbt [x] .epub |
-//   y=90             | [x] .fb2                              |
+//   y=34             | [x] .zip [x] .cbz  [x] .rar [x] .cbr  |
+//   y=62             | [x] .7z  [x] .cb7  [x] .cbt [x] .epub |
+//   y=90             | [x] .fb2 [x] .mobi [x] .azw [x] .azw3 |
 //                    +------------------------------...+   ← frame bottom y=130
 //   y=140  [Sort order]
 //   y=148            +--------------------+
@@ -100,6 +100,12 @@ pub struct ConfigApp {
     cb_epub: nwg::CheckBox,
     #[nwg_control(parent: ext_frame, text: ".fb2", size: (96, 22), position: (14, 72))]
     cb_fb2: nwg::CheckBox,
+    #[nwg_control(parent: ext_frame, text: ".mobi", size: (96, 22), position: (114, 72))]
+    cb_mobi: nwg::CheckBox,
+    #[nwg_control(parent: ext_frame, text: ".azw", size: (96, 22), position: (214, 72))]
+    cb_azw: nwg::CheckBox,
+    #[nwg_control(parent: ext_frame, text: ".azw3", size: (96, 22), position: (314, 72))]
+    cb_azw3: nwg::CheckBox,
 
     // ------------------------------------------------------------------
     // Sort order group
@@ -236,6 +242,9 @@ impl ConfigApp {
             &self.cb_cbt,
             &self.cb_epub,
             &self.cb_fb2,
+            &self.cb_mobi,
+            &self.cb_azw,
+            &self.cb_azw3,
         ]
     }
 

@@ -51,6 +51,11 @@ quick-xml = "0.36"
 # Used by the FB2 backend to decode the base64-encoded images that
 # FictionBook embeds inline in the document. Pure Rust, ~25 KB.
 base64 = "0.22"
+# Pure-Rust parser for the Amazon Kindle MOBI / AZW / AZW3 (KF8)
+# container format. We only need cover-image extraction; the heavy
+# parts of the crate (HTML rendering, dictionary lookup) aren't on
+# our hot path.
+mobi = "0.8"
 image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
