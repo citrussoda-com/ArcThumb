@@ -46,9 +46,17 @@ impl SortOrder {
             _ => None,
         }
     }
+
+    /// Canonical registry string form. Paired with `from_registry_value`.
+    pub fn as_registry_value(self) -> &'static str {
+        match self {
+            Self::Alphabetical => "alphabetical",
+            Self::Natural => "natural",
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub sort_order: SortOrder,
     /// When true, files named `cover.*`, `folder.*`, `thumb.*`,
@@ -67,7 +75,10 @@ impl Default for Settings {
 }
 
 impl Settings {
-    fn load_from_registry() -> Self {
+    /// Read settings from `HKCU\Software\ArcThumb` without touching the
+    /// process-wide cache. The config GUI uses this so each "Apply"
+    /// round sees fresh registry state.
+    pub fn load_from_registry_uncached() -> Self {
         let mut out = Self::default();
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let Ok(key) = hkcu.open_subkey("Software\\ArcThumb") else {
@@ -84,6 +95,18 @@ impl Settings {
         }
         out
     }
+
+    /// Write `sort_order` and `prefer_cover_names` to
+    /// `HKCU\Software\ArcThumb`. Creates the key if missing. Leaves
+    /// other values (e.g. `Language`) untouched.
+    pub fn save_to_registry(&self) -> std::io::Result<()> {
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey("Software\\ArcThumb")?;
+        key.set_value("SortOrder", &self.sort_order.as_registry_value().to_string())?;
+        let flag: u32 = if self.prefer_cover_names { 1 } else { 0 };
+        key.set_value("PreferCoverNames", &flag)?;
+        Ok(())
+    }
 }
 
 /// Process-wide cached settings. Loaded lazily on first use and
@@ -91,7 +114,7 @@ impl Settings {
 /// to pick up registry edits.
 pub fn current() -> &'static Settings {
     static CACHE: OnceLock<Settings> = OnceLock::new();
-    CACHE.get_or_init(Settings::load_from_registry)
+    CACHE.get_or_init(Settings::load_from_registry_uncached)
 }
 
 // =============================================================================

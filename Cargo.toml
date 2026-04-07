@@ -8,7 +8,14 @@ repository = "https://github.com/remu1519/ArcThumb"
 readme = "README.md"
 
 [lib]
-crate-type = ["cdylib"]
+# `cdylib` produces `arcthumb.dll` for Explorer; `rlib` lets the
+# `arcthumb-config` binary target `use arcthumb::{settings, registry}`
+# without duplicating the source.
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "arcthumb-config"
+path = "src/bin/arcthumb-config/main.rs"
 
 [features]
 default = []
@@ -30,6 +37,7 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Globalization",
 ]}
 winreg = "0.52"
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -40,6 +48,22 @@ image = { version = "0.25", default-features = false, features = [
     "jpeg", "png", "gif", "bmp", "tiff", "ico", "webp",
 ] }
 jxl-oxide = { version = "0.11", features = ["image"], optional = true }
+# UI toolkit for the `arcthumb-config` binary.
+# Basic controls (button, label, check-box, radio-button, message-box)
+# are included in the base crate without feature gating. We only opt
+# out of the heavy optional modules we don't need: image-decoder,
+# datetime-picker, rich-textbox, file-dialog, flexbox, etc.
+native-windows-gui = { version = "1.0", default-features = false, features = [
+    "cursor", "message-window", "menu", "frame",
+] }
+native-windows-derive = "1.0"
+
+[build-dependencies]
+# Compile and embed an application manifest so arcthumb-config.exe
+# links against Common Controls v6. Without this, nwg fails to
+# resolve `GetWindowSubclass` at process start and the exe won't
+# launch. Applies to both the DLL and the exe; the DLL ignores it.
+embed-resource = "2"
 
 [profile.release]
 lto = true

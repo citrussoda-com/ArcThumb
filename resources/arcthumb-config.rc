@@ -1,0 +1,7 @@
+// Resource script for arcthumb-config.exe.
+//
+// Resource ID 1, type 24 (RT_MANIFEST) points at the application
+// manifest XML. We don't #include <winresrc.h> so the .rc can be
+// compiled by either rc.exe or llvm-rc without an SDK header path.
+
+1 24 "arcthumb-config.manifest"

@@ -12,8 +12,8 @@ mod com;
 mod decode;
 mod limits;
 mod log;
-mod registry;
-mod settings;
+pub mod registry;
+pub mod settings;
 mod stream;
 
 use std::panic::catch_unwind;
