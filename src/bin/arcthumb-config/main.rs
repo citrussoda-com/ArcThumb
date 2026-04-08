@@ -31,6 +31,7 @@
 // so `cargo run` output is visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cache;
 mod dll_path;
 mod state;
 mod strings;

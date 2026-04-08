@@ -153,13 +153,24 @@ pub struct ConfigApp {
     cb_enable_preview: nwg::CheckBox,
 
     // ------------------------------------------------------------------
-    // OK / Cancel / Apply — right-aligned with 12 px right margin,
-    // 6 px gaps between buttons, 80 px each.
+    // Bottom row.
+    //
+    // Left side: utility action — "Regenerate thumbnails" — at
+    // (14, 300), 160 px wide. Wide enough for both the English label
+    // and the Japanese "サムネイルを再生成". Visually separated from
+    // the OK/Cancel/Apply triplet by the 6 px gap to OK at x=180.
+    //
+    // Right side: OK / Cancel / Apply — right-aligned with 12 px
+    // right margin, 6 px gaps between buttons, 80 px each.
     //     Window width   = 444
     //     Right margin   = 12  → Apply right edge = 432, left = 352
     //     6 px gap       → Cancel right = 346, left = 266
     //     6 px gap       → OK right = 260, left = 180
     // ------------------------------------------------------------------
+    #[nwg_control(text: "Regenerate thumbnails", size: (160, 26), position: (14, 300))]
+    #[nwg_events( OnButtonClick: [ConfigApp::on_regenerate] )]
+    regen_btn: nwg::Button,
+
     #[nwg_control(text: "OK", size: (80, 26), position: (180, 300))]
     #[nwg_events( OnButtonClick: [ConfigApp::on_ok] )]
     ok_btn: nwg::Button,
@@ -226,6 +237,7 @@ impl ConfigApp {
             .set_check_state(bool_to_check(model.preview_enabled));
 
         // Bottom buttons
+        self.regen_btn.set_text(strings.btn_regenerate);
         self.ok_btn.set_text(strings.btn_ok);
         self.cancel_btn.set_text(strings.btn_cancel);
         self.apply_btn.set_text(strings.btn_apply);
@@ -292,6 +304,39 @@ impl ConfigApp {
 
     fn on_apply(&self) {
         let _ = self.apply_changes();
+    }
+
+    /// "Regenerate thumbnails" button. Confirms with the user, then
+    /// kills Explorer, wipes the Windows thumbnail/icon cache files,
+    /// and restarts Explorer. The safety net for the case where
+    /// `SHChangeNotify(SHCNE_ASSOCCHANGED)` from Apply / install
+    /// wasn't enough — typically when the user opened an archive
+    /// before installing ArcThumb and Explorer cached "no thumbnail"
+    /// for it.
+    fn on_regenerate(&self) {
+        let strings = s();
+
+        let params = nwg::MessageParams {
+            title: strings.error_title,
+            content: strings.regen_confirm,
+            buttons: nwg::MessageButtons::OkCancel,
+            icons: nwg::MessageIcons::Warning,
+        };
+        if nwg::modal_message(&self.window, &params) != nwg::MessageChoice::Ok {
+            return;
+        }
+
+        match crate::cache::wipe_thumbnail_cache() {
+            Ok(report) if report.failed.is_empty() => {
+                nwg::modal_info_message(&self.window, strings.error_title, strings.regen_done);
+            }
+            Ok(_) => {
+                nwg::modal_error_message(&self.window, strings.error_title, strings.regen_partial);
+            }
+            Err(e) => {
+                self.error(strings.regen_partial, &e);
+            }
+        }
     }
 
     fn apply_changes(&self) -> bool {
