@@ -1,6 +1,6 @@
 # ArcThumb
 
-![ArcThumb](assets/thumbnail.png)
+![ArcThumb](assets/thumbnail.jpg)
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Version](https://img.shields.io/github/v/release/citrussoda-com/ArcThumb?label=version&color=green)](https://github.com/citrussoda-com/ArcThumb/releases)
