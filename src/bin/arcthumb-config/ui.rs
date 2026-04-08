@@ -298,6 +298,12 @@ impl ConfigApp {
         let strings = s();
         let (new_settings, new_ext_enabled, new_preview_enabled) = self.collect_from_ui();
         let mut ok = true;
+        // Tracks whether anything in the registry actually changed.
+        // We use this to decide whether to ask the Shell to drop its
+        // icon/thumbnail cache at the end — there's no point poking
+        // Explorer when the user clicked Apply without changing
+        // anything that affects shell registrations.
+        let mut shell_state_changed = false;
 
         // --- Settings (sort order + prefer cover)
         let old_settings = self.model.borrow().settings;
@@ -318,12 +324,16 @@ impl ConfigApp {
                     if registry::register_extension(ext).is_err() {
                         failures.push(ext);
                         ok = false;
+                    } else {
+                        shell_state_changed = true;
                     }
                 }
                 (true, false) => {
                     if registry::unregister_extension(ext).is_err() {
                         failures.push(ext);
                         ok = false;
+                    } else {
+                        shell_state_changed = true;
                     }
                 }
                 _ => {}
@@ -339,10 +349,22 @@ impl ConfigApp {
         // --- Preview pane handler (global toggle)
         let old_preview = self.model.borrow().preview_enabled;
         if old_preview != new_preview_enabled {
-            if let Err(e) = apply_preview_toggle(new_preview_enabled) {
-                self.error(strings.error_register, &format!("{e}"));
-                ok = false;
+            match apply_preview_toggle(new_preview_enabled) {
+                Ok(()) => shell_state_changed = true,
+                Err(e) => {
+                    self.error(strings.error_register, &format!("{e}"));
+                    ok = false;
+                }
             }
+        }
+
+        // Whenever we touched shell registrations, ask Explorer to
+        // invalidate its icon/thumbnail cache so the change takes
+        // effect immediately. Without this, newly enabled extensions
+        // would still show the old "no thumbnail" cache entry until
+        // the user logs out or wipes thumbcache_*.db by hand.
+        if shell_state_changed {
+            registry::notify_assoc_changed();
         }
 
         self.reload_model();

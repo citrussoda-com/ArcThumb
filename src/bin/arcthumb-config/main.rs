@@ -73,6 +73,10 @@ fn cli_install() -> i32 {
             return 4;
         }
     }
+    // Tell Explorer to drop its icon/thumbnail cache so the freshly
+    // registered handlers take effect without a reboot — this is what
+    // Microsoft's shell extension docs require us to do.
+    arcthumb::registry::notify_assoc_changed();
     0
 }
 
@@ -83,6 +87,7 @@ fn cli_uninstall() -> i32 {
     }
     let _ = arcthumb::registry::unregister_clsid();
     let _ = arcthumb::registry::unregister_preview_clsid();
+    arcthumb::registry::notify_assoc_changed();
     0
 }
 

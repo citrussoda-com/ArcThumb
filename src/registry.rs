@@ -317,6 +317,7 @@ pub fn register() -> io::Result<()> {
         register_extension(ext)?;
         register_preview_extension(ext)?;
     }
+    notify_assoc_changed();
     Ok(())
 }
 
@@ -327,7 +328,37 @@ pub fn unregister() -> io::Result<()> {
     }
     let _ = unregister_clsid();
     let _ = unregister_preview_clsid();
+    notify_assoc_changed();
     Ok(())
+}
+
+/// Tell the Shell that file-type associations changed so it invalidates
+/// its icon and thumbnail caches and picks up our newly registered (or
+/// removed) handlers without a reboot.
+///
+/// Microsoft's [shell-extension registration docs][docs] require this
+/// call after writing or deleting a handler:
+///
+/// > Applications that register new handlers of any type must call
+/// > `SHChangeNotify` with the `SHCNE_ASSOCCHANGED` flag to instruct
+/// > the Shell to invalidate the icon and thumbnail cache.
+///
+/// Without it, Explorer will keep showing whatever it cached before —
+/// including the "this file has no thumbnail" negative result for
+/// archives the user opened before installing ArcThumb. Call this from
+/// every code path that mutates our shell registrations: the DLL's
+/// `register()` / `unregister()`, the config exe's `--install` /
+/// `--uninstall` CLI, and the Apply button in the GUI.
+///
+/// Best-effort: the call has no return value to check, and on the
+/// failure paths there is nothing actionable for the user anyway.
+///
+/// [docs]: https://learn.microsoft.com/en-us/windows/win32/shell/reg-shell-exts
+pub fn notify_assoc_changed() {
+    use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+    unsafe {
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
 }
 
 #[cfg(test)]
