@@ -30,24 +30,22 @@ use crate::limits;
 /// unreadable file as the "first image" and fail to produce a
 /// thumbnail at all.
 const IMAGE_EXTS: &[&str] = &[
-    "jpg",
-    "jpeg",
-    "png",
-    "gif",
-    "bmp",
-    "tiff",
-    "tif",
-    "webp",
-    "ico",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".webp",
+    ".ico",
     #[cfg(feature = "jxl")]
-    "jxl",
+    ".jxl",
 ];
 
 pub(crate) fn has_image_ext(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    IMAGE_EXTS
-        .iter()
-        .any(|ext| lower.ends_with(&format!(".{ext}")))
+    IMAGE_EXTS.iter().any(|ext| lower.ends_with(ext))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

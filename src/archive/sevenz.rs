@@ -32,10 +32,9 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
 
     // Second phase: stream through entries until we reach the target,
     // buffer it, then stop.
-    let target_for_callback = target.clone();
     let mut captured: Option<Vec<u8>> = None;
     sz.for_each_entries(|entry, r| {
-        if entry.name == target_for_callback {
+        if entry.name == target {
             let mut buf = Vec::with_capacity(entry.size as usize);
             r.read_to_end(&mut buf)?;
             captured = Some(buf);
