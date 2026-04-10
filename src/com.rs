@@ -171,7 +171,7 @@ impl ArcThumbProvider_Impl {
         // Clamp to Windows's standard icon range. Explorer's largest
         // bucket is 2560 (Extra Large × high DPI); the lower bound is
         // defensive.
-        let size = cx.clamp(limits::MIN_THUMBNAIL_SIZE, limits::MAX_THUMBNAIL_SIZE);
+        let size = clamp_thumbnail_size(cx);
 
         let stream = self.this.stream.borrow().clone().ok_or_else(|| {
             alog!("  no stream attached");
@@ -193,5 +193,117 @@ impl ArcThumbProvider_Impl {
             *pdwalpha = WTSAT_ARGB;
         }
         Ok(())
+    }
+}
+
+/// Clamp a requested thumbnail size to the allowed range.
+fn clamp_thumbnail_size(cx: u32) -> u32 {
+    cx.clamp(limits::MIN_THUMBNAIL_SIZE, limits::MAX_THUMBNAIL_SIZE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_within_range_is_identity() {
+        assert_eq!(clamp_thumbnail_size(64), 64);
+        assert_eq!(clamp_thumbnail_size(256), 256);
+        assert_eq!(
+            clamp_thumbnail_size(limits::MIN_THUMBNAIL_SIZE),
+            limits::MIN_THUMBNAIL_SIZE
+        );
+        assert_eq!(
+            clamp_thumbnail_size(limits::MAX_THUMBNAIL_SIZE),
+            limits::MAX_THUMBNAIL_SIZE
+        );
+    }
+
+    #[test]
+    fn clamp_below_minimum() {
+        assert_eq!(clamp_thumbnail_size(0), limits::MIN_THUMBNAIL_SIZE);
+        assert_eq!(clamp_thumbnail_size(1), limits::MIN_THUMBNAIL_SIZE);
+        assert_eq!(
+            clamp_thumbnail_size(limits::MIN_THUMBNAIL_SIZE - 1),
+            limits::MIN_THUMBNAIL_SIZE
+        );
+    }
+
+    #[test]
+    fn clamp_above_maximum() {
+        assert_eq!(clamp_thumbnail_size(u32::MAX), limits::MAX_THUMBNAIL_SIZE);
+        assert_eq!(
+            clamp_thumbnail_size(limits::MAX_THUMBNAIL_SIZE + 1),
+            limits::MAX_THUMBNAIL_SIZE
+        );
+        assert_eq!(clamp_thumbnail_size(10000), limits::MAX_THUMBNAIL_SIZE);
+    }
+
+    #[test]
+    fn clamp_standard_explorer_sizes() {
+        // Explorer's common thumbnail size buckets.
+        for size in [16, 32, 48, 64, 96, 128, 256, 512, 1024, 2560] {
+            let clamped = clamp_thumbnail_size(size);
+            assert_eq!(clamped, size, "standard size {size} should pass through");
+        }
+    }
+
+    #[test]
+    fn try_generate_thumbnail_rejects_garbage_stream() {
+        use windows::Win32::UI::Shell::SHCreateMemStream;
+        let garbage = b"this is not an archive at all";
+        let stream: IStream =
+            unsafe { SHCreateMemStream(Some(garbage)) }.expect("SHCreateMemStream");
+        let result = try_generate_thumbnail(stream, 64);
+        assert!(result.is_err(), "garbage data should fail");
+    }
+
+    #[test]
+    fn try_generate_thumbnail_rejects_empty_stream() {
+        use windows::Win32::UI::Shell::SHCreateMemStream;
+        let stream: IStream = unsafe { SHCreateMemStream(Some(&[])) }.expect("SHCreateMemStream");
+        let result = try_generate_thumbnail(stream, 64);
+        assert!(result.is_err(), "empty stream should fail");
+    }
+
+    #[test]
+    fn try_generate_thumbnail_succeeds_with_valid_zip() {
+        use std::io::Cursor;
+        use windows::Win32::Graphics::Gdi::{DeleteObject, HGDIOBJ};
+        use windows::Win32::UI::Shell::SHCreateMemStream;
+
+        // Build a valid ZIP containing a PNG
+        let png = {
+            use image::{DynamicImage, ImageBuffer, Rgba};
+            let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+                ImageBuffer::from_fn(4, 4, |_, _| Rgba([255, 0, 0, 255]));
+            let mut out = Vec::new();
+            DynamicImage::ImageRgba8(img)
+                .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let zip_bytes = {
+            use zip::write::SimpleFileOptions;
+            let mut buf = Vec::new();
+            {
+                let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));
+                let opts =
+                    SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                w.start_file("test.png", opts).unwrap();
+                std::io::Write::write_all(&mut w, &png).unwrap();
+                w.finish().unwrap();
+            }
+            buf
+        };
+
+        let stream: IStream =
+            unsafe { SHCreateMemStream(Some(&zip_bytes)) }.expect("SHCreateMemStream");
+        let hbmp = try_generate_thumbnail(stream, 64).expect("should succeed");
+        assert!(!hbmp.is_invalid());
+        // Clean up
+        unsafe {
+            let _ = DeleteObject(HGDIOBJ(hbmp.0));
+        }
     }
 }
