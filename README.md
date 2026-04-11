@@ -9,7 +9,7 @@
 
 A Windows Explorer shell extension that shows cover thumbnails and preview-pane previews for comic book archives (ZIP, CBZ, RAR, CBR, 7Z, CB7, CBT) and ebooks (EPUB, FB2, MOBI, AZW, AZW3).
 
-ArcThumb is inspired by [CBX Shell](https://www.t800productions.com/) and [DarkThumbs](http://thumbs.kaioa.com/), rewritten in Rust with WebP support and Windows 10/11 as the baseline.
+ArcThumb is inspired by [CBXShell](https://github.com/T800G/CBXShell) and [DarkThumbs](https://github.com/fire-eggs/DarkThumbs), rewritten in Rust with WebP support and Windows 10/11 as the baseline.
 
 ![Explorer showing ArcThumb-generated thumbnails for comic archives and EPUB files](assets/explorer.png)
 
@@ -175,6 +175,6 @@ Third-party components redistributed with `arcthumb-config.exe` are listed in [T
 
 ## Credits
 
-The idea comes from [CBX Shell](https://www.t800productions.com/) by T800 Productions and [DarkThumbs](http://thumbs.kaioa.com/) by kaioa. The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust](https://github.com/dyz1990/sevenz-rust) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [Slint](https://slint.dev/) for the configuration dialog.
+The idea comes from [CBXShell](https://github.com/T800G/CBXShell) by T800 Productions and [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) (originally by kaioa, now maintained by fire-eggs). The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust](https://crates.io/crates/sevenz-rust) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [Slint](https://slint.dev/) for the configuration dialog.
 
 Bug reports and feature requests go to [GitHub Issues](https://github.com/citrussoda-com/ArcThumb/issues).
