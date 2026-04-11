@@ -151,11 +151,7 @@ mod tests {
         let model = ExtensionModel::from_enabled(&baseline_enabled());
         for (i, expected) in registry::EXTENSIONS.iter().enumerate() {
             let entry = model.inner.row_data(i).expect("row exists");
-            assert_eq!(
-                entry.name.as_str(),
-                *expected,
-                "name mismatch at index {i}"
-            );
+            assert_eq!(entry.name.as_str(), *expected, "name mismatch at index {i}");
         }
     }
 
