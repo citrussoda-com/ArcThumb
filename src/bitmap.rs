@@ -42,18 +42,15 @@ pub fn from_rgba(img: &image::RgbaImage) -> Result<HBITMAP> {
     // Copy + convert pixel layout.
     let src = img.as_raw(); // RGBA bytes
     let pixel_count = (width as usize) * (height as usize);
+    // Premultiply RGBA → BGRA into the DIB section buffer.
     unsafe {
         let dst = std::slice::from_raw_parts_mut(bits as *mut u8, pixel_count * 4);
-        for i in 0..pixel_count {
-            let r = src[i * 4];
-            let g = src[i * 4 + 1];
-            let b = src[i * 4 + 2];
-            let a = src[i * 4 + 3];
-            // Premultiply alpha so Explorer can composite correctly.
-            dst[i * 4] = premul(b, a);
-            dst[i * 4 + 1] = premul(g, a);
-            dst[i * 4 + 2] = premul(r, a);
-            dst[i * 4 + 3] = a;
+        for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            let (r, g, b, a) = (src_px[0], src_px[1], src_px[2], src_px[3]);
+            dst_px[0] = premul(b, a);
+            dst_px[1] = premul(g, a);
+            dst_px[2] = premul(r, a);
+            dst_px[3] = a;
         }
     }
 
