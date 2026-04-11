@@ -120,19 +120,26 @@ fn parse_container_xml(xml: &str) -> Option<String> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
-                if local_name_eq(&e, b"rootfile") {
-                    if let Some(path) = attr_value(&e, &Reader::from_str(""), b"full-path") {
-                        return Some(path);
-                    }
+            Ok(Event::Empty(e) | Event::Start(e)) => {
+                if let Some(path) = rootfile_full_path(&e) {
+                    return Some(path);
                 }
             }
-            Ok(Event::Eof) => return None,
-            Err(_) => return None,
+            Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
         buf.clear();
     }
+}
+
+/// Return the `full-path` attribute of a `<rootfile>` element, or
+/// `None` if `e` is not a `<rootfile>` or has no `full-path`. Lifted
+/// out of `parse_container_xml` so the caller's match arm stays flat.
+fn rootfile_full_path(e: &BytesStart) -> Option<String> {
+    if !local_name_eq(e, b"rootfile") {
+        return None;
+    }
+    attr_value(e, &Reader::from_str(""), b"full-path")
 }
 
 /// Single-pass scan of an OPF document. Collects manifest items,
@@ -169,10 +176,10 @@ fn find_cover_href(xml: &str) -> Option<String> {
         return Some(href);
     }
     // EPUB 2: indirect via cover-id → manifest item href.
-    if let Some(id) = epub2_cover_id {
-        if let Some(href) = items.get(&id) {
-            return Some(href.clone());
-        }
+    if let Some(id) = epub2_cover_id
+        && let Some(href) = items.get(&id)
+    {
+        return Some(href.clone());
     }
     None
 }
@@ -193,21 +200,22 @@ fn handle_item(
     // EPUB 3: properties is a space-separated token list. Match
     // exactly one of the tokens, not a substring (so a hypothetical
     // `super-cover-image` wouldn't false-positive).
-    if let (Some(props), Some(href)) = (properties, href) {
-        if props.split_ascii_whitespace().any(|p| p == "cover-image") && epub3_cover_href.is_none()
-        {
-            *epub3_cover_href = Some(href);
-        }
+    if let (Some(props), Some(href)) = (properties, href)
+        && props.split_ascii_whitespace().any(|p| p == "cover-image")
+        && epub3_cover_href.is_none()
+    {
+        *epub3_cover_href = Some(href);
     }
 }
 
 fn handle_meta(e: &BytesStart, reader: &Reader<&[u8]>, epub2_cover_id: &mut Option<String>) {
     let name = attr_value(e, reader, b"name");
     let content = attr_value(e, reader, b"content");
-    if let (Some(n), Some(c)) = (name, content) {
-        if n == "cover" && epub2_cover_id.is_none() {
-            *epub2_cover_id = Some(c);
-        }
+    if let (Some(n), Some(c)) = (name, content)
+        && n == "cover"
+        && epub2_cover_id.is_none()
+    {
+        *epub2_cover_id = Some(c);
     }
 }
 
@@ -232,8 +240,8 @@ fn parent_dir(path: &str) -> &str {
 /// - hrefs starting with `/` → treat as absolute from ZIP root
 /// - hrefs containing `../` → resolve them by collapsing path components
 fn join_zip_path(opf_dir: &str, href: &str) -> String {
-    if href.starts_with('/') {
-        return href[1..].to_string();
+    if let Some(stripped) = href.strip_prefix('/') {
+        return stripped.to_string();
     }
     let combined = format!("{opf_dir}{href}");
     normalize_path(&combined)

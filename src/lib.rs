@@ -50,6 +50,23 @@ fn guard<F: FnOnce() -> HRESULT + std::panic::UnwindSafe>(f: F) -> HRESULT {
 /// Our job:
 /// 1. Check the requested CLSID is ours (we only host one class).
 /// 2. Hand back an `IClassFactory` that knows how to create `ArcThumbProvider`s.
+///
+/// # Safety
+///
+/// This is the COM ABI surface, called by the OLE runtime. Callers
+/// must guarantee:
+/// - `rclsid`, `riid`, and `ppv` are either null or point to valid,
+///   properly aligned objects of the right type for the duration of
+///   the call. The function explicitly checks for null and returns
+///   `E_POINTER` in that case, so unaligned/dangling pointers are
+///   the only remaining UB risk.
+/// - `*ppv` will be initialised by this function on success and
+///   left untouched on failure; callers must not rely on its value
+///   if the returned `HRESULT` is a failure code.
+/// - The returned interface follows COM reference counting rules:
+///   on success, the caller owns one reference and must `Release`
+///   it. The OLE runtime handles this for normal `CoCreateInstance`
+///   paths.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DllGetClassObject(
     rclsid: *const GUID,

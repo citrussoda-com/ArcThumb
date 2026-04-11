@@ -2,7 +2,7 @@
 //!
 //! ## GUI mode (default)
 //!
-//! Running with no arguments launches a small native Windows dialog
+//! Running with no arguments launches a Slint-based settings window
 //! where the user can enable/disable individual file extensions and
 //! tweak the thumbnail selection behaviour (sort order, cover-name
 //! preference).
@@ -31,24 +31,28 @@
 // so `cargo run` output is visible.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod apply;
 mod cache;
+mod dialogs;
 mod dll_path;
+mod extension_model;
+mod locale;
+mod message_box;
 mod state;
-mod strings;
 mod ui;
 mod update;
-
-use native_windows_gui as nwg;
-use nwg::NativeUi;
-
-use crate::state::UiModel;
+mod update_check;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
         Some("--install") => std::process::exit(cli_install()),
         Some("--uninstall") => std::process::exit(cli_uninstall()),
-        _ => run_gui(),
+        _ => {
+            if ui::run_gui().is_err() {
+                std::process::exit(5);
+            }
+        }
     }
 }
 
@@ -91,44 +95,4 @@ fn cli_uninstall() -> i32 {
     let _ = arcthumb::registry::unregister_preview_clsid();
     arcthumb::registry::notify_assoc_changed();
     0
-}
-
-fn run_gui() {
-    if nwg::init().is_err() {
-        std::process::exit(5);
-    }
-
-    // Match the Windows Property-sheet look: Segoe UI, ~14 logical
-    // units high (close to 11pt @ 96 DPI). Setting this BEFORE
-    // building controls applies it to every control we create.
-    let mut font = nwg::Font::default();
-    if nwg::Font::builder()
-        .family("Segoe UI")
-        .size(14)
-        .build(&mut font)
-        .is_ok()
-    {
-        nwg::Font::set_global_default(Some(font));
-    }
-
-    ui::set_strings(strings::current());
-    let model = UiModel::load();
-
-    let app = ui::ConfigApp::build_ui(Default::default()).expect("failed to build UI");
-    app.set_initial_model(model);
-    app.refresh_from_model();
-
-    // Donation prompt — synchronous, runs before the event loop.
-    // Only fires when the user has just upgraded to a newer version.
-    if let Some(ver) = update::should_show_donation() {
-        app.show_donation_dialog(&ver);
-        update::record_donation_shown();
-    }
-
-    // Background update check — non-blocking. The Notice control
-    // signals the UI thread when the result is ready.
-    app.start_update_check();
-
-    nwg::dispatch_thread_events();
-    drop(app);
 }

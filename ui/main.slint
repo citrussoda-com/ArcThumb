@@ -1,0 +1,328 @@
+// Slint UI for arcthumb-config.exe.
+//
+// Exported components:
+//   * MainWindow    — settings dialog with File / Help menu bar.
+//   * AboutDialog   — embeds `AboutSlint` for the Slint Royalty-Free
+//                     License 2.0 attribution. Reached via Help → About.
+//   * UpdateDialog  — "new version available" prompt with a
+//                     "Skip this version" checkbox. Replaces the old
+//                     three-button MessageBox.
+//   * DonationDialog — "thanks for updating" prompt with a
+//                     "Don't show again" checkbox.
+//
+// All user-visible strings come from the Rust side via `in` properties
+// rather than `@tr("...")`. A future refactor may switch to gettext
+// once the build toolchain is wired up.
+
+import {
+    AboutSlint,
+    Button,
+    CheckBox,
+    ComboBox,
+    GroupBox,
+    HorizontalBox,
+    VerticalBox,
+} from "std-widgets.slint";
+
+// One row in the per-extension toggle list. Owned by the Rust side
+// (`extension_model::ExtensionModel`) and handed to `MainWindow`
+// via `set_extensions`. Names come from `arcthumb::registry::EXTENSIONS`
+// so the GUI list always matches what the registry layer recognises.
+export struct ExtensionEntry {
+    name: string,
+    enabled: bool,
+}
+
+export component MainWindow inherits Window {
+    title: root.window_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 520px;
+    // Tuned so the bottom-row buttons sit a comfortable 12-16 px
+    // below "Enable preview pane" at default size. Larger windows
+    // grow that gap because the spacer Rectangle below has
+    // `vertical-stretch: 1`; the floor is set by `min-height`.
+    preferred-height: 430px;
+    min-width: 500px;
+    min-height: 410px;
+
+    // ---- Localized labels (set from Rust at startup) -------------
+    in property <string> window_title;
+    in property <string> menu_file;
+    in property <string> menu_file_exit;
+    in property <string> menu_help;
+    in property <string> menu_help_about;
+    in property <string> group_extensions;
+    in property <string> group_sort;
+    in property <string> sort_natural_label;
+    in property <string> sort_alpha_label;
+    in property <string> prefer_cover_label;
+    in property <string> enable_preview_label;
+    in property <string> btn_ok;
+    in property <string> btn_cancel;
+    in property <string> btn_apply;
+    in property <string> btn_regenerate;
+
+    // ---- Two-way bindable state ---------------------------------
+    // The per-extension toggle list. Driven from Rust via a
+    // `VecModel<ExtensionEntry>` so the row layout follows
+    // `arcthumb::registry::EXTENSIONS` automatically.
+    in property <[ExtensionEntry]> extensions;
+    in-out property <bool> sort_natural;
+    in-out property <bool> prefer_cover;
+    in-out property <bool> enable_preview;
+
+    // ---- Callbacks ----------------------------------------------
+    callback ok_clicked();
+    callback cancel_clicked();
+    callback apply_clicked();
+    callback regenerate_clicked();
+    callback about_clicked();
+    callback exit_clicked();
+    // User flipped the checkbox at row `index`. Slint forwards a
+    // notification only — the Rust side mutates the underlying
+    // `VecModel` and Slint re-reads the row.
+    callback toggle_extension(int);
+
+    MenuBar {
+        Menu {
+            title: root.menu_file;
+            MenuItem {
+                title: root.menu_file_exit;
+                activated => { root.exit_clicked(); }
+            }
+        }
+        Menu {
+            title: root.menu_help;
+            MenuItem {
+                title: root.menu_help_about;
+                activated => { root.about_clicked(); }
+            }
+        }
+    }
+
+    // Layout note (resize behaviour):
+    //
+    // `VerticalBox` distributes leftover height to children with
+    // `vertical-stretch > 0`. By default *every* child gets some,
+    // which made the GroupBox internals balloon and the ComboBox
+    // grow taller as the window resized. We pin every content
+    // widget to `vertical-stretch: 0` so they keep their natural
+    // height, and put a single stretchy spacer just above the
+    // button row to absorb all extra vertical space. The result:
+    // section internals stay tight, the gap between content and
+    // the footer is the only thing that grows on resize.
+    VerticalBox {
+        padding: 14px;
+        spacing: 12px;
+
+        GroupBox {
+            vertical-stretch: 0;
+            title: root.group_extensions;
+            // 4 columns wide, row-major. We compute the row/col
+            // from the iteration index `i` so the layout follows
+            // `arcthumb::registry::EXTENSIONS` order automatically.
+            // `Math.floor` and `Math.mod` are needed because Slint
+            // returns a float from `int / int`.
+            GridLayout {
+                spacing: 6px;
+                for entry[i] in root.extensions: CheckBox {
+                    row: Math.floor(i / 4);
+                    col: Math.mod(i, 4);
+                    vertical-stretch: 0;
+                    text: entry.name;
+                    checked: entry.enabled;
+                    toggled => {
+                        root.toggle_extension(i);
+                    }
+                }
+            }
+        }
+
+        GroupBox {
+            vertical-stretch: 0;
+            title: root.group_sort;
+            ComboBox {
+                vertical-stretch: 0;
+                model: [root.sort_natural_label, root.sort_alpha_label];
+                current-index: root.sort_natural ? 0 : 1;
+                selected(current) => {
+                    root.sort_natural = self.current-index == 0;
+                }
+            }
+        }
+
+        CheckBox {
+            vertical-stretch: 0;
+            text: root.prefer_cover_label;
+            checked <=> root.prefer_cover;
+        }
+
+        CheckBox {
+            vertical-stretch: 0;
+            text: root.enable_preview_label;
+            checked <=> root.enable_preview;
+        }
+
+        // The only stretchy element. Absorbs all extra height when
+        // the window is resized so nothing above grows internally.
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            vertical-stretch: 0;
+            spacing: 6px;
+            Button {
+                text: root.btn_regenerate;
+                clicked => { root.regenerate_clicked(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_ok;
+                primary: true;
+                clicked => { root.ok_clicked(); }
+            }
+            Button {
+                text: root.btn_cancel;
+                clicked => { root.cancel_clicked(); }
+            }
+            Button {
+                text: root.btn_apply;
+                clicked => { root.apply_clicked(); }
+            }
+        }
+    }
+}
+
+export component AboutDialog inherits Window {
+    title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 460px;
+    preferred-height: 420px;
+
+    in property <string> dialog_title;
+    in property <string> body_text;
+    in property <string> btn_close;
+
+    callback close_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        AboutSlint { }
+
+        Text {
+            text: root.body_text;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_close;
+                clicked => { root.close_clicked(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}
+
+export component UpdateDialog inherits Window {
+    title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 440px;
+    preferred-height: 220px;
+
+    in property <string> dialog_title;
+    in property <string> message_text;
+    in property <string> skip_checkbox_label;
+    in property <string> btn_open;
+    in property <string> btn_later;
+
+    in-out property <bool> skip_checked: false;
+
+    callback open_clicked();
+    callback later_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        Text {
+            text: root.message_text;
+            wrap: word-wrap;
+        }
+
+        CheckBox {
+            text: root.skip_checkbox_label;
+            checked <=> root.skip_checked;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_open;
+                primary: true;
+                clicked => { root.open_clicked(); }
+            }
+            Button {
+                text: root.btn_later;
+                clicked => { root.later_clicked(); }
+            }
+        }
+    }
+}
+
+export component DonationDialog inherits Window {
+    title: root.dialog_title;
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 440px;
+    preferred-height: 220px;
+
+    in property <string> dialog_title;
+    in property <string> message_text;
+    in property <string> dont_show_label;
+    in property <string> btn_sponsor;
+    in property <string> btn_later;
+
+    in-out property <bool> dont_show_checked: false;
+
+    callback sponsor_clicked();
+    callback later_clicked();
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 14px;
+
+        Text {
+            text: root.message_text;
+            wrap: word-wrap;
+        }
+
+        CheckBox {
+            text: root.dont_show_label;
+            checked <=> root.dont_show_checked;
+        }
+
+        Rectangle { vertical-stretch: 1; }
+
+        HorizontalBox {
+            spacing: 6px;
+            Rectangle { horizontal-stretch: 1; }
+            Button {
+                text: root.btn_sponsor;
+                primary: true;
+                clicked => { root.sponsor_clicked(); }
+            }
+            Button {
+                text: root.btn_later;
+                clicked => { root.later_clicked(); }
+            }
+        }
+    }
+}

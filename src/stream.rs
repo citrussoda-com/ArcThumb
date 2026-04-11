@@ -87,13 +87,16 @@ mod tests {
     }
 
     impl MemStream {
+        // Returns the COM-implemented `IStream` interface, not
+        // `Self`, because that's all the test callers ever need.
+        // Clippy's `new_ret_no_self` is irrelevant here.
+        #[allow(clippy::new_ret_no_self)]
         fn new(data: Vec<u8>) -> IStream {
-            let s: IStream = Self {
+            Self {
                 data: std::cell::RefCell::new(data),
                 pos: std::cell::Cell::new(0),
             }
-            .into();
-            s
+            .into()
         }
     }
 

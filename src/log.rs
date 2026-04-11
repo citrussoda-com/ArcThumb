@@ -32,10 +32,10 @@ fn enabled() -> bool {
 fn log_to(path: &Path, msg: &str) {
     // Truncate-if-oversized: if a forgotten debug session has let
     // the log grow past the cap, blow it away before appending.
-    if let Ok(metadata) = std::fs::metadata(path) {
-        if metadata.len() > limits::MAX_LOG_FILE_SIZE {
-            let _ = std::fs::remove_file(path);
-        }
+    if let Ok(metadata) = std::fs::metadata(path)
+        && metadata.len() > limits::MAX_LOG_FILE_SIZE
+    {
+        let _ = std::fs::remove_file(path);
     }
 
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
