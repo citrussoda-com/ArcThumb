@@ -57,10 +57,10 @@ pub fn try_extract_cover(xml_bytes: &[u8]) -> Option<(String, Vec<u8>)> {
     let xml = String::from_utf8_lossy(xml_bytes);
 
     // Strategy 1: explicit cover via coverpage → matching binary id.
-    if let Some(cover_id) = find_cover_id(&xml) {
-        if let Some(result) = extract_binary_by_id(&xml, &cover_id) {
-            return Some(result);
-        }
+    if let Some(cover_id) = find_cover_id(&xml)
+        && let Some(result) = extract_binary_by_id(&xml, &cover_id)
+    {
+        return Some(result);
     }
 
     // Strategy 2: first binary that *looks* like an image. Catches
@@ -134,14 +134,16 @@ fn find_cover_id(xml: &str) -> Option<String> {
                 }
             }
             Ok(Event::Empty(e)) => {
-                if qname_local_eq(e.name(), b"image") && in_title_info > 0 && in_coverpage > 0 {
-                    if let Some(href) = attr_value(&e, &reader, b"href") {
-                        // The href is "#binary_id"; strip the leading
-                        // `#`. Some malformed FB2s omit it.
-                        let id = href.strip_prefix('#').unwrap_or(&href).to_string();
-                        if !id.is_empty() {
-                            return Some(id);
-                        }
+                if qname_local_eq(e.name(), b"image")
+                    && in_title_info > 0
+                    && in_coverpage > 0
+                    && let Some(href) = attr_value(&e, &reader, b"href")
+                {
+                    // The href is "#binary_id"; strip the leading
+                    // `#`. Some malformed FB2s omit it.
+                    let id = href.strip_prefix('#').unwrap_or(&href).to_string();
+                    if !id.is_empty() {
+                        return Some(id);
                     }
                 }
             }
@@ -196,14 +198,14 @@ where
                 if !in_target && qname_local_eq(e.name(), b"binary") {
                     let id = attr_value(&e, &reader, b"id");
                     let ct = attr_value(&e, &reader, b"content-type");
-                    if let Some(id_val) = id.as_ref() {
-                        if matcher(id_val, ct.as_deref()) {
-                            in_target = true;
-                            found_target = true;
-                            target_id = Some(id_val.clone());
-                            target_ct = ct;
-                            target_text.clear();
-                        }
+                    if let Some(id_val) = id.as_ref()
+                        && matcher(id_val, ct.as_deref())
+                    {
+                        in_target = true;
+                        found_target = true;
+                        target_id = Some(id_val.clone());
+                        target_ct = ct;
+                        target_text.clear();
                     }
                 }
             }

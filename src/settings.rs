@@ -23,19 +23,15 @@ use winreg::enums::*;
 
 /// How to order image files within an archive before picking the
 /// "first" one for the thumbnail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SortOrder {
     /// Plain byte-wise sort. `page10.jpg` comes before `page2.jpg`.
     Alphabetical,
     /// Natural sort: runs of digits compared numerically so
-    /// `page2.jpg` comes before `page10.jpg`.
+    /// `page2.jpg` comes before `page10.jpg`. Default because
+    /// page2 < page10 is what users expect for comic archives.
+    #[default]
     Natural,
-}
-
-impl Default for SortOrder {
-    fn default() -> Self {
-        Self::Natural
-    }
 }
 
 impl SortOrder {
@@ -85,10 +81,10 @@ impl Settings {
             return out;
         };
 
-        if let Ok(s) = key.get_value::<String, _>("SortOrder") {
-            if let Some(order) = SortOrder::from_registry_value(&s) {
-                out.sort_order = order;
-            }
+        if let Ok(s) = key.get_value::<String, _>("SortOrder")
+            && let Some(order) = SortOrder::from_registry_value(&s)
+        {
+            out.sort_order = order;
         }
         if let Ok(v) = key.get_value::<u32, _>("PreferCoverNames") {
             out.prefer_cover_names = v != 0;
@@ -135,10 +131,10 @@ pub fn pick_first_image(mut names: Vec<String>) -> Option<String> {
         SortOrder::Natural => names.sort_by(|a, b| natural_cmp(a, b)),
     }
 
-    if s.prefer_cover_names {
-        if let Some(cover) = names.iter().find(|n| is_cover_name(n)) {
-            return Some(cover.clone());
-        }
+    if s.prefer_cover_names
+        && let Some(cover) = names.iter().find(|n| is_cover_name(n))
+    {
+        return Some(cover.clone());
     }
 
     names.into_iter().next()
@@ -149,10 +145,7 @@ pub fn pick_first_image(mut names: Vec<String>) -> Option<String> {
 fn is_cover_name(path: &str) -> bool {
     // Take whatever's after the last `/` or `\` — archive formats
     // use both depending on origin.
-    let basename = path
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or(path);
+    let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
     let stem = basename
         .rsplit_once('.')
         .map(|(s, _)| s)
