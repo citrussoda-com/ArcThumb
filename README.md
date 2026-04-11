@@ -77,6 +77,60 @@ iscc installer\arcthumb.iss                    # build the installer
 # output: target\installer\ArcThumb-Setup.exe
 ```
 
+### Reinstalling after a DLL change
+
+`arcthumb.dll` runs inside `explorer.exe`, the `dllhost.exe` COM
+Surrogate, and (when the preview pane is open) `prevhost.exe`. While
+any of those have it loaded, Windows refuses to overwrite the file
+and the installer falls back to "queue for next reboot". The COM
+Surrogate is the easiest one to forget — it can stay resident for
+several minutes after the last thumbnail request.
+
+The reliable way to refresh both binaries during local development:
+
+```powershell
+# 1. Build the new DLL + config GUI, then re-bundle the installer.
+#    Skip step (b) and you'll be running an installer that contains
+#    the previous build's exe.
+cargo build --release                                        # (a)
+iscc installer\arcthumb.iss                                  # (b)
+
+# 2. Release every host process that holds the old DLL.
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Stop-Process -Name dllhost  -Force -ErrorAction SilentlyContinue
+Stop-Process -Name prevhost -Force -ErrorAction SilentlyContinue
+
+# 3. Run the freshly built installer. Same AppId, so it upgrades
+#    the existing install in place. Tick "Launch ArcThumb
+#    Configuration" on the Finish page.
+.\target\installer\ArcThumb-Setup.exe
+
+# 4. Bring Explorer back if the installer didn't already.
+Start-Process explorer
+```
+
+If steps 1-4 still leave you with the old GUI or "file in use" errors,
+the install state is wedged. To recover:
+
+```powershell
+# Kill the host processes again, then nuke the install dir by hand.
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Stop-Process -Name dllhost  -Force -ErrorAction SilentlyContinue
+Stop-Process -Name prevhost -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "$env:LOCALAPPDATA\Programs\ArcThumb" -Recurse -Force -ErrorAction SilentlyContinue
+
+# Belt-and-braces registry cleanup (the uninstaller normally handles
+# this, but if it errored mid-run there can be leftovers).
+Remove-Item -Path "HKCU:\Software\Classes\CLSID\{0F4F5659-D383-4945-A534-01E1EED1D23F}" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "HKCU:\Software\Classes\CLSID\{8C7C1E5F-3D4A-4E2B-9F1A-7B5D6E8F9A0C}" -Recurse -Force -ErrorAction SilentlyContinue
+
+Start-Process explorer
+.\target\installer\ArcThumb-Setup.exe
+```
+
+If even that fails, **sign out and back in** — that guarantees every
+per-user `dllhost.exe` (and any other stragglers) is torn down.
+
 ### Tests
 
 ```sh
@@ -121,10 +175,11 @@ If you change `assets/icon.png`, run `cargo run --example make_icon` to rebuild 
 
 ### Thumbnails don't update after installing
 
-Windows caches thumbnails in `thumbcache_*.db`, including the "this file has no thumbnail" answer. If you opened a comic file before installing ArcThumb, the cached negative result will keep showing instead of the new thumbnail. Flushing the cache from PowerShell fixes it:
+Windows caches thumbnails in `thumbcache_*.db`, including the "this file has no thumbnail" answer. If you opened a comic file before installing ArcThumb, the cached negative result will keep showing instead of the new thumbnail. The easiest fix is the **Regenerate thumbnails** button in the configuration GUI (Start menu → ArcThumb Configuration). It does the equivalent of:
 
 ```powershell
 Stop-Process -Name explorer -Force
+Stop-Process -Name dllhost  -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\thumbcache_*.db" -Force -ErrorAction SilentlyContinue
 Remove-Item "$env:LOCALAPPDATA\Microsoft\Windows\Explorer\iconcache_*.db" -Force -ErrorAction SilentlyContinue
 Start-Process explorer
