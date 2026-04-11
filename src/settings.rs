@@ -102,10 +102,7 @@ impl Settings {
     pub fn save_to_registry(&self) -> std::io::Result<()> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let (key, _) = hkcu.create_subkey("Software\\ArcThumb")?;
-        key.set_value(
-            "SortOrder",
-            &self.sort_order.as_registry_value().to_string(),
-        )?;
+        key.set_value("SortOrder", &self.sort_order.as_registry_value())?;
         let flag: u32 = if self.prefer_cover_names { 1 } else { 0 };
         key.set_value("PreferCoverNames", &flag)?;
         Ok(())
