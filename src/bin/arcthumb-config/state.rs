@@ -5,9 +5,9 @@
 use arcthumb::registry;
 use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings};
 
-/// Number of extensions ArcThumb can manage. Must match the length
-/// of `registry::EXTENSIONS`.
-pub const EXT_COUNT: usize = 12;
+/// Number of extensions ArcThumb can manage. Derived directly from
+/// `registry::EXTENSIONS` so the two can't drift apart.
+pub const EXT_COUNT: usize = registry::EXTENSIONS.len();
 
 /// Settings + per-extension enable state. No "is the shell extension
 /// installed?" tracking here — installation is the installer's job,
@@ -33,8 +33,6 @@ pub struct UiModel {
 
 impl UiModel {
     pub fn load() -> Self {
-        debug_assert_eq!(registry::EXTENSIONS.len(), EXT_COUNT);
-
         let settings = Settings::load_from_registry_uncached();
         let ext_enabled: [bool; EXT_COUNT] =
             std::array::from_fn(|i| registry::is_extension_registered(registry::EXTENSIONS[i]));

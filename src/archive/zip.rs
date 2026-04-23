@@ -3,9 +3,8 @@
 use std::error::Error;
 use std::io::{Read, Seek, SeekFrom};
 
-use crate::{ebook, limits, settings};
-
-use super::has_image_ext;
+use crate::settings::Settings;
+use crate::{ebook, limits};
 
 /// Look for an `.fb2` entry inside an already-opened ZIP archive
 /// (the `.fb2.zip` distribution convention). Returns `None` if no
@@ -40,6 +39,7 @@ fn try_extract_fb2_from_zip<R: Read + Seek>(
 
 pub(super) fn zip_read_first_image<R: Read + Seek>(
     mut reader: R,
+    settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
     reader.seek(SeekFrom::Start(0))?;
     let mut archive = zip::ZipArchive::new(reader)?;
@@ -68,7 +68,10 @@ pub(super) fn zip_read_first_image<R: Read + Seek>(
     let candidates: Vec<String> = (0..archive.len())
         .filter_map(|i| {
             let f = archive.by_index(i).ok()?;
-            if f.is_file() && has_image_ext(f.name()) && f.size() <= limits::MAX_ENTRY_SIZE {
+            if f.is_file()
+                && settings.accepts_image_ext(f.name())
+                && f.size() <= limits::MAX_ENTRY_SIZE
+            {
                 Some(f.name().to_string())
             } else {
                 None
@@ -76,7 +79,8 @@ pub(super) fn zip_read_first_image<R: Read + Seek>(
         })
         .collect();
 
-    let name = settings::pick_first_image(candidates)
+    let name = settings
+        .pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
     let mut file = archive.by_name(&name)?;
@@ -389,6 +393,88 @@ mod tests {
         let epub = build_epub(container, "content.opf", opf, &[("cover.png", &png)]);
         let (name, _) = read_first_image(epub).expect("EPUB read");
         assert_eq!(name, "cover.png");
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: image-extension mask gating
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn mask_excludes_disabled_image_extension_from_candidates() {
+        use super::super::read_first_image_with;
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
+
+        let png = make_tiny_png();
+        // Zip with one .jpg and one .png. The .jpg sorts before .png,
+        // so with all-on mask the .jpg would be picked; with .jpg
+        // disabled, the .png must be picked instead.
+        let zip = build_zip(&[("a.jpg", &png), ("b.png", &png)]);
+
+        let jpg_idx = SUPPORTED_IMAGE_EXTS
+            .iter()
+            .position(|&e| e == ".jpg")
+            .unwrap();
+        let settings = Settings {
+            enabled_image_exts_mask: !(1u32 << jpg_idx)
+                & crate::settings::default_enabled_image_exts_mask(),
+            prefer_cover_names: false,
+            ..Settings::default()
+        };
+        let (name, _) = read_first_image_with(zip, &settings).expect("jpg disabled");
+        assert_eq!(name, "b.png");
+
+        // Inverse: disable .png, .jpg should be picked.
+        let zip = build_zip(&[("a.jpg", &png), ("b.png", &png)]);
+        let png_idx = SUPPORTED_IMAGE_EXTS
+            .iter()
+            .position(|&e| e == ".png")
+            .unwrap();
+        let settings = Settings {
+            enabled_image_exts_mask: !(1u32 << png_idx)
+                & crate::settings::default_enabled_image_exts_mask(),
+            prefer_cover_names: false,
+            ..Settings::default()
+        };
+        let (name, _) = read_first_image_with(zip, &settings).expect("png disabled");
+        assert_eq!(name, "a.jpg");
+    }
+
+    #[test]
+    fn mask_of_zero_rejects_all_images_even_in_archive() {
+        use super::super::read_first_image_with;
+        use crate::settings::Settings;
+
+        let png = make_tiny_png();
+        let zip = build_zip(&[("only.png", &png)]);
+        let settings = Settings {
+            enabled_image_exts_mask: 0,
+            ..Settings::default()
+        };
+        let result = read_first_image_with(zip, &settings);
+        assert!(result.is_err(), "zero mask must produce no-image error");
+    }
+
+    #[test]
+    fn every_supported_extension_round_trips_through_zip_when_enabled_alone() {
+        // For every supported extension, build a zip with only that
+        // extension present, configure a mask that enables only that
+        // extension, and verify it's picked.
+        use super::super::read_first_image_with;
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
+
+        let body = make_tiny_png();
+        for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let entry = format!("file{ext}");
+            let zip = build_zip(&[(&entry, &body)]);
+            let settings = Settings {
+                enabled_image_exts_mask: 1u32 << i,
+                prefer_cover_names: false,
+                ..Settings::default()
+            };
+            let (name, _) = read_first_image_with(zip, &settings)
+                .unwrap_or_else(|e| panic!("ext {ext} with solo-enabled mask failed: {e}"));
+            assert_eq!(name, entry, "should pick {entry} under solo mask");
+        }
     }
 
     #[test]

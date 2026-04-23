@@ -24,19 +24,9 @@ use std::error::Error;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::limits;
-use crate::settings::{self, SUPPORTED_IMAGE_EXTS};
-
-pub(crate) fn has_image_ext(name: &str) -> bool {
-    has_image_ext_with_mask(name, settings::current().enabled_image_exts_mask)
-}
-
-fn has_image_ext_with_mask(name: &str, mask: u32) -> bool {
-    let lower = name.to_ascii_lowercase();
-    SUPPORTED_IMAGE_EXTS
-        .iter()
-        .enumerate()
-        .any(|(i, ext)| (mask & (1u32 << i)) != 0 && lower.ends_with(ext))
-}
+#[cfg(test)]
+use crate::settings::SUPPORTED_IMAGE_EXTS;
+use crate::settings::{self, Settings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Format {
@@ -99,8 +89,23 @@ fn detect_format(magic: &[u8]) -> Format {
 }
 
 /// Open an archive stream, pick the first image, return `(name, bytes)`.
-pub fn read_first_image<R: Read + Seek>(
+///
+/// Thin wrapper around [`read_first_image_with`] that uses the
+/// process-wide cached [`Settings`]. Production (the shell
+/// extension) calls this; tests that need explicit control over
+/// sort order or the image-extension mask should call
+/// `read_first_image_with` directly.
+pub fn read_first_image<R: Read + Seek>(reader: R) -> Result<(String, Vec<u8>), Box<dyn Error>> {
+    read_first_image_with(reader, settings::current())
+}
+
+/// Dependency-injected variant: caller chooses which settings
+/// govern image-extension filtering and sort order. All archive
+/// backends route through here — the global-reading `read_first_image`
+/// is the only place that touches `settings::current()`.
+pub fn read_first_image_with<R: Read + Seek>(
     mut reader: R,
+    settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
     // Size guard: check total stream length before touching any parser.
     let total = reader.seek(SeekFrom::End(0))?;
@@ -121,10 +126,10 @@ pub fn read_first_image<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
 
     match detect_format(&magic) {
-        Format::Zip => zip::zip_read_first_image(reader),
-        Format::SevenZ => sevenz::sevenz_read_first_image(reader),
-        Format::Rar => rar::rar_read_first_image(reader),
-        Format::Tar => tar::tar_read_first_image(reader),
+        Format::Zip => zip::zip_read_first_image(reader, settings),
+        Format::SevenZ => sevenz::sevenz_read_first_image(reader, settings),
+        Format::Rar => rar::rar_read_first_image(reader, settings),
+        Format::Tar => tar::tar_read_first_image(reader, settings),
         Format::Fb2 => fb2::fb2_read_first_image(reader),
         Format::Mobi => mobi::mobi_read_first_image(reader),
         Format::Unknown => Err("unrecognised archive format".into()),
@@ -152,87 +157,83 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // has_image_ext
+    // Settings::accepts_image_ext
     // ---------------------------------------------------------------
+
+    fn settings_with_mask(mask: u32) -> Settings {
+        Settings {
+            enabled_image_exts_mask: mask,
+            ..Settings::default()
+        }
+    }
 
     #[test]
     fn image_ext_recognised_lowercase() {
+        let s = Settings::default();
         for ext in &[
             "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp", "ico",
         ] {
-            assert!(has_image_ext(&format!("foo.{ext}")), "ext={ext}");
+            assert!(s.accepts_image_ext(&format!("foo.{ext}")), "ext={ext}");
         }
     }
 
     #[test]
     fn image_ext_case_insensitive() {
-        assert!(has_image_ext("foo.JPG"));
-        assert!(has_image_ext("foo.PnG"));
-        assert!(has_image_ext("comic/CHAPTER1/01.WEBP"));
+        let s = Settings::default();
+        assert!(s.accepts_image_ext("foo.JPG"));
+        assert!(s.accepts_image_ext("foo.PnG"));
+        assert!(s.accepts_image_ext("comic/CHAPTER1/01.WEBP"));
     }
 
     #[test]
     fn image_ext_rejects_non_images() {
-        assert!(!has_image_ext("foo.txt"));
-        assert!(!has_image_ext("foo.zip"));
-        assert!(!has_image_ext("README"));
-        assert!(!has_image_ext(""));
+        let s = Settings::default();
+        assert!(!s.accepts_image_ext("foo.txt"));
+        assert!(!s.accepts_image_ext("foo.zip"));
+        assert!(!s.accepts_image_ext("README"));
+        assert!(!s.accepts_image_ext(""));
     }
 
     #[test]
     fn image_ext_does_not_match_substring() {
-        // The extension check requires a literal "." separator,
-        // so "foopng" must not be treated as a PNG.
-        assert!(!has_image_ext("foopng"));
-        assert!(!has_image_ext("imagejpg"));
+        let s = Settings::default();
+        assert!(!s.accepts_image_ext("foopng"));
+        assert!(!s.accepts_image_ext("imagejpg"));
     }
 
     #[test]
     fn mask_disables_specific_extensions() {
-        // Only bit 0 (.jpg) set.
-        assert!(has_image_ext_with_mask("a.jpg", 0b1));
-        assert!(!has_image_ext_with_mask("a.png", 0b1));
-        // All off.
-        assert!(!has_image_ext_with_mask("a.jpg", 0));
-        // Find .png (index 2 in SUPPORTED_IMAGE_EXTS) via only its bit.
+        assert!(settings_with_mask(0b1).accepts_image_ext("a.jpg"));
+        assert!(!settings_with_mask(0b1).accepts_image_ext("a.png"));
+        assert!(!settings_with_mask(0).accepts_image_ext("a.jpg"));
         let png_idx = SUPPORTED_IMAGE_EXTS
             .iter()
             .position(|&e| e == ".png")
             .unwrap();
-        let mask = 1u32 << png_idx;
-        assert!(has_image_ext_with_mask("a.png", mask));
-        assert!(!has_image_ext_with_mask("a.jpg", mask));
+        let s = settings_with_mask(1u32 << png_idx);
+        assert!(s.accepts_image_ext("a.png"));
+        assert!(!s.accepts_image_ext("a.jpg"));
     }
 
     #[test]
     fn every_supported_extension_can_be_solo_enabled() {
-        // For each supported extension, build a mask with only that
-        // extension's bit set, then verify a file with that extension
-        // is recognised and no other supported extension leaks through.
         for (i, target_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
-            let mask = 1u32 << i;
+            let s = settings_with_mask(1u32 << i);
             let target_name = format!("foo{target_ext}");
             assert!(
-                has_image_ext_with_mask(&target_name, mask),
+                s.accepts_image_ext(&target_name),
                 "{target_ext} should be recognised when its own bit (index {i}) is set"
             );
             for (j, other_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
                 if i == j {
                     continue;
                 }
-                // `.jpg` / `.jpeg` and `.tif` / `.tiff` overlap by
-                // suffix: `foo.jpeg` ends with `.jpg`? No —
-                // `".jpeg".ends_with(".jpg")` is false. But
-                // `".tiff".ends_with(".tif")` IS true, so a file
-                // named `foo.tiff` with only the `.tif` bit set would
-                // still match. Skip the asymmetric suffix cases so
-                // the test asserts only what `ends_with` can decide.
                 if other_ext.ends_with(target_ext) || target_ext.ends_with(other_ext) {
                     continue;
                 }
                 let other_name = format!("bar{other_ext}");
                 assert!(
-                    !has_image_ext_with_mask(&other_name, mask),
+                    !s.accepts_image_ext(&other_name),
                     "{other_ext} must NOT match when only {target_ext} (bit {i}) is set"
                 );
             }
@@ -241,12 +242,10 @@ mod tests {
 
     #[test]
     fn every_supported_extension_can_be_solo_disabled() {
-        // Inverse: with every bit set EXCEPT one, files of the
-        // disabled extension must be rejected, and every other
-        // extension must still match.
         let all = crate::settings::default_enabled_image_exts_mask();
         for (i, target_ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
             let mask = all & !(1u32 << i);
+            let s = settings_with_mask(mask);
             let target_name = format!("foo{target_ext}");
             // Skip asymmetric suffix overlaps: disabling `.tif`
             // (index 6) doesn't reject `.tiff` because `.tiff` also
@@ -262,15 +261,16 @@ mod tests {
                 continue;
             }
             assert!(
-                !has_image_ext_with_mask(&target_name, mask),
+                !s.accepts_image_ext(&target_name),
                 "{target_ext} should be rejected when only its bit (index {i}) is cleared"
             );
         }
         // Sanity: default mask accepts every supported extension.
+        let default = Settings::default();
         for ext in SUPPORTED_IMAGE_EXTS {
             let name = format!("foo{ext}");
             assert!(
-                has_image_ext_with_mask(&name, all),
+                default.accepts_image_ext(&name),
                 "{ext} should match under the default (all-on) mask"
             );
         }
@@ -278,11 +278,11 @@ mod tests {
 
     #[test]
     fn mask_matches_are_case_insensitive() {
-        let all = crate::settings::default_enabled_image_exts_mask();
+        let s = Settings::default();
         for ext in SUPPORTED_IMAGE_EXTS {
             let upper = format!("FOO{}", ext.to_uppercase());
             assert!(
-                has_image_ext_with_mask(&upper, all),
+                s.accepts_image_ext(&upper),
                 "uppercase {ext} should still match"
             );
         }

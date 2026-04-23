@@ -3,12 +3,12 @@
 use std::error::Error;
 use std::io::{Read, Seek, SeekFrom};
 
-use crate::{limits, settings};
-
-use super::has_image_ext;
+use crate::limits;
+use crate::settings::Settings;
 
 pub(super) fn sevenz_read_first_image<R: Read + Seek>(
     mut reader: R,
+    settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
     use sevenz_rust::{Password, SevenZReader};
 
@@ -24,10 +24,15 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
         .archive()
         .files
         .iter()
-        .filter(|f| !f.is_directory() && has_image_ext(&f.name) && f.size <= limits::MAX_ENTRY_SIZE)
+        .filter(|f| {
+            !f.is_directory()
+                && settings.accepts_image_ext(&f.name)
+                && f.size <= limits::MAX_ENTRY_SIZE
+        })
         .map(|f| f.name.clone())
         .collect();
-    let target = settings::pick_first_image(candidates)
+    let target = settings
+        .pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
     // Second phase: stream through entries until we reach the target,
@@ -110,5 +115,63 @@ mod tests {
     fn sevenz_with_no_images_errors() {
         let sz = build_7z(&[("readme.txt", b"hello"), ("notes.md", b"# md")]);
         assert!(read_first_image(sz).is_err());
+    }
+
+    // ---------------------------------------------------------------
+    // end-to-end: image-extension mask gating
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sevenz_mask_excludes_disabled_image_extension() {
+        use super::super::read_first_image_with;
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings, default_enabled_image_exts_mask};
+
+        let png = make_tiny_png();
+        let jpg_idx = SUPPORTED_IMAGE_EXTS
+            .iter()
+            .position(|&e| e == ".jpg")
+            .unwrap();
+        let sz = build_7z(&[("a.jpg", &png), ("b.png", &png)]);
+        let settings = Settings {
+            enabled_image_exts_mask: !(1u32 << jpg_idx) & default_enabled_image_exts_mask(),
+            prefer_cover_names: false,
+            ..Settings::default()
+        };
+        let (name, _) = read_first_image_with(sz, &settings).expect("mask excludes jpg");
+        assert_eq!(name, "b.png");
+    }
+
+    #[test]
+    fn sevenz_mask_of_zero_rejects_all_images() {
+        use super::super::read_first_image_with;
+        use crate::settings::Settings;
+
+        let png = make_tiny_png();
+        let sz = build_7z(&[("only.png", &png)]);
+        let settings = Settings {
+            enabled_image_exts_mask: 0,
+            ..Settings::default()
+        };
+        assert!(read_first_image_with(sz, &settings).is_err());
+    }
+
+    #[test]
+    fn sevenz_every_supported_extension_round_trips_when_enabled_alone() {
+        use super::super::read_first_image_with;
+        use crate::settings::{SUPPORTED_IMAGE_EXTS, Settings};
+
+        let png = make_tiny_png();
+        for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let entry = format!("file{ext}");
+            let sz = build_7z(&[(&entry, &png)]);
+            let settings = Settings {
+                enabled_image_exts_mask: 1u32 << i,
+                prefer_cover_names: false,
+                ..Settings::default()
+            };
+            let (name, _) = read_first_image_with(sz, &settings)
+                .unwrap_or_else(|e| panic!("7z ext {ext} solo-enabled failed: {e}"));
+            assert_eq!(name, entry);
+        }
     }
 }
