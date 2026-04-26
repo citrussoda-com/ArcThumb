@@ -1,0 +1,12 @@
+# Statically link the MSVC C runtime so the resulting DLL and exe do
+# not depend on vcruntime140.dll / msvcp140.dll being present on the
+# host. Windows Sandbox and freshly imaged Windows machines do not
+# ship the VC++ Redistributable, so a dynamically linked binary
+# fails to load there with a "vcruntime140.dll was not found" dialog
+# (or, for `windows_subsystem = "windows"` exes, silently exits).
+#
+# Cost is roughly +200 KB per binary. Cheap relative to bundling
+# vc_redist.x64.exe in the installer, which would force a UAC prompt
+# and break the per-user no-admin install story.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
