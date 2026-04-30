@@ -2,8 +2,10 @@
 //
 // Exported components:
 //   * MainWindow    — settings dialog with File / Help menu bar.
-//   * AboutDialog   — embeds `AboutSlint` for the Slint Royalty-Free
-//                     License 2.0 attribution. Reached via Help → About.
+//   * AboutDialog   — shows ArcThumb version up top and the Slint
+//                     attribution widget below (required by the
+//                     Slint Royalty-Free License 2.0). Reached via
+//                     Help → About.
 //   * UpdateDialog  — "new version available" prompt with a
 //                     "Skip this version" checkbox. Replaces the old
 //                     three-button MessageBox.
@@ -220,9 +222,10 @@ export component AboutDialog inherits Window {
     title: root.dialog_title;
     icon: @image-url("../assets/icon.png");
     preferred-width: 460px;
-    preferred-height: 420px;
+    preferred-height: 460px;
 
     in property <string> dialog_title;
+    in property <string> version_text;
     in property <string> body_text;
     in property <string> btn_close;
 
@@ -232,13 +235,20 @@ export component AboutDialog inherits Window {
         padding: 18px;
         spacing: 14px;
 
-        AboutSlint { }
+        Text {
+            text: root.version_text;
+            font-size: 18px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
 
         Text {
             text: root.body_text;
             wrap: word-wrap;
             horizontal-alignment: center;
         }
+
+        AboutSlint { }
 
         Rectangle { vertical-stretch: 1; }
 

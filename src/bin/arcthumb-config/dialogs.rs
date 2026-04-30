@@ -59,6 +59,10 @@ pub fn show_about(strings: &Strings) {
         Err(_) => return,
     };
     dialog.set_dialog_title(SharedString::from(strings.about_title));
+    dialog.set_version_text(SharedString::from(format!(
+        "ArcThumb {}",
+        update::current_version()
+    )));
     dialog.set_body_text(SharedString::from(strings.about_body));
     dialog.set_btn_close(SharedString::from(strings.btn_close));
 
