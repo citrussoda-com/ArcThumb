@@ -27,7 +27,7 @@ default = []
 jxl = ["dep:jxl-oxide"]
 
 [dependencies]
-windows-core = "0.58"
+windows-core = "0.62"
 windows = { version = "0.58", features = [
     "implement",
     "Win32_Foundation",
@@ -115,7 +115,7 @@ i-slint-backend-testing = "1.15"
 # Integration tests need to call Win32 APIs directly (LoadLibrary,
 # GetProcAddress, SHCreateMemStream, GDI cleanup) and to talk to
 # arcthumb.dll across the COM ABI like Explorer would.
-windows-core = "0.58"
+windows-core = "0.62"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
