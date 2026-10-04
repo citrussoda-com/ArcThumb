@@ -85,6 +85,18 @@ pub const EXTENSIONS: &[&str] = &[
     ".azw3",
 ];
 
+/// Extensions bound by every build that predates the `KnownExtensions`
+/// value. An install with no recorded list is assumed to have known
+/// exactly these. **Frozen**: new formats go in [`EXTENSIONS`] only.
+pub const PRE_TRACKING_EXTENSIONS: &[&str] = &[
+    ".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7", ".cbt", ".epub", ".fb2", ".mobi", ".azw",
+    ".azw3",
+];
+
+/// Value on the thumbnail CLSID key holding the space-separated
+/// extension list the installed build knew about.
+const KNOWN_EXTENSIONS_VALUE: &str = "KnownExtensions";
+
 /// Production parent key for shell extension registrations.
 const CLASSES_BASE: &str = "Software\\Classes";
 
@@ -312,6 +324,33 @@ pub fn is_clsid_registered(scope: Scope) -> bool {
         &scope.root_key(),
         &format!("{}\\InprocServer32", THUMBNAIL.clsid_root()),
     )
+}
+
+/// Record, on the thumbnail CLSID key, the extension list this build
+/// knows about. The next `--install` reads it back to tell "the user
+/// switched this extension off" (known, binding absent) from "this
+/// extension is new in the build being installed" (not known yet).
+/// Lives under the CLSID key so uninstall removes it with the rest.
+pub fn write_known_extensions(scope: Scope) -> io::Result<()> {
+    write_known_extensions_at(&scope.root_key(), &THUMBNAIL.clsid_root())
+}
+
+/// The list written by [`write_known_extensions`], or `None` when the
+/// value is missing (nothing installed, or installed by a build that
+/// predates it).
+pub fn read_known_extensions(scope: Scope) -> Option<Vec<String>> {
+    read_known_extensions_at(&scope.root_key(), &THUMBNAIL.clsid_root())
+}
+
+fn write_known_extensions_at(root: &RegKey, clsid_root: &str) -> io::Result<()> {
+    let (key, _) = root.create_subkey(clsid_root)?;
+    key.set_value(KNOWN_EXTENSIONS_VALUE, &EXTENSIONS.join(" "))
+}
+
+fn read_known_extensions_at(root: &RegKey, clsid_root: &str) -> Option<Vec<String>> {
+    let key = root.open_subkey(clsid_root).ok()?;
+    let list: String = key.get_value(KNOWN_EXTENSIONS_VALUE).ok()?;
+    Some(list.split_whitespace().map(str::to_string).collect())
 }
 
 /// Read back `HK??\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`.
@@ -618,6 +657,38 @@ mod tests {
 
         unregister_clsid_at(&hkcu(), &clsid_root).expect("unregister");
         assert!(!is_subkey_present(&hkcu(), &clsid_root));
+    }
+
+    #[test]
+    fn known_extensions_roundtrip_and_survive_reregistration() {
+        let sandbox = unique_sandbox("known_exts");
+        let _guard = SandboxGuard(sandbox.clone());
+        let clsid_root = format!("{sandbox}\\{{TEST-CLSID}}");
+
+        // Missing key and missing value both read as "not recorded".
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+        let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &THUMBNAIL).expect("register");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+
+        write_known_extensions_at(&hkcu(), &clsid_root).expect("write");
+        let read_back = read_known_extensions_at(&hkcu(), &clsid_root).expect("read back");
+        assert_eq!(read_back, EXTENSIONS);
+
+        // An upgrade rewrites the CLSID key in place; the list stays.
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &THUMBNAIL).expect("re-register");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_some());
+
+        // Uninstall takes it away with the key.
+        unregister_clsid_at(&hkcu(), &clsid_root).expect("unregister");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+    }
+
+    #[test]
+    fn pre_tracking_extensions_are_all_still_supported() {
+        for ext in PRE_TRACKING_EXTENSIONS {
+            assert!(EXTENSIONS.contains(ext), "{ext} dropped from EXTENSIONS");
+        }
     }
 
     #[test]

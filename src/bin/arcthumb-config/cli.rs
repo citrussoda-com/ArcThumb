@@ -31,6 +31,11 @@ pub const EXIT_EXTENSION_FAILED: i32 = 4;
 pub trait CliOps {
     fn resolve_dll_path(&self) -> Result<PathBuf, String>;
     fn current_scope(&self) -> Scope;
+    fn is_clsid_registered(&self, scope: Scope) -> bool;
+    fn is_extension_registered(&self, scope: Scope, ext: &'static str) -> bool;
+    fn is_preview_enabled(&self, scope: Scope) -> bool;
+    fn known_extensions(&self, scope: Scope) -> Option<Vec<String>>;
+    fn record_known_extensions(&self, scope: Scope) -> io::Result<()>;
     fn register_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()>;
     fn register_preview_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()>;
     fn register_extension(&self, scope: Scope, ext: &'static str) -> io::Result<()>;
@@ -50,6 +55,21 @@ impl CliOps for RealCliOps {
     }
     fn current_scope(&self) -> Scope {
         arcthumb::elevation::current_scope()
+    }
+    fn is_clsid_registered(&self, scope: Scope) -> bool {
+        registry::is_clsid_registered(scope)
+    }
+    fn is_extension_registered(&self, scope: Scope, ext: &'static str) -> bool {
+        registry::is_extension_registered(scope, ext)
+    }
+    fn is_preview_enabled(&self, scope: Scope) -> bool {
+        registry::is_preview_enabled(scope)
+    }
+    fn known_extensions(&self, scope: Scope) -> Option<Vec<String>> {
+        registry::read_known_extensions(scope)
+    }
+    fn record_known_extensions(&self, scope: Scope) -> io::Result<()> {
+        registry::write_known_extensions(scope)
     }
     fn register_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()> {
         registry::register_clsid(scope, dll_path)
@@ -92,23 +112,47 @@ pub fn run_install(ops: &dyn CliOps) -> i32 {
         Err(_) => return EXIT_DLL_NOT_FOUND,
     };
     let scope = ops.current_scope();
+
+    // The installer runs `--install` on upgrades too. Read what the
+    // user had before writing anything, so an extension or the preview
+    // pane they switched off in the GUI stays off.
+    let upgrade = ops.is_clsid_registered(scope);
+    let known = ops.known_extensions(scope);
+    let was_known = |ext: &str| match &known {
+        Some(list) => list.iter().any(|k| k == ext),
+        None => registry::PRE_TRACKING_EXTENSIONS.contains(&ext),
+    };
+    // On an upgrade a missing binding means "switched off" only for an
+    // extension the previous build already offered. One that is new in
+    // this build was never offered, so it starts enabled.
+    let thumbnail_exts: Vec<&'static str> = registry::EXTENSIONS
+        .iter()
+        .copied()
+        .filter(|&ext| !upgrade || ops.is_extension_registered(scope, ext) || !was_known(ext))
+        .collect();
+    // The preview pane is one switch for every extension.
+    let preview = !upgrade || ops.is_preview_enabled(scope);
+
     // Both COM classes (thumbnail provider + preview handler) are
-    // registered together by the installer so the user gets both
+    // registered together on a fresh install so the user gets both
     // features by default. The GUI's "Enable preview pane" checkbox
     // can later be unchecked to remove just the preview handler.
     if ops.register_clsid(scope, &dll_path).is_err() {
         return EXIT_CLSID_FAILED;
     }
-    if ops.register_preview_clsid(scope, &dll_path).is_err() {
+    if preview && ops.register_preview_clsid(scope, &dll_path).is_err() {
         return EXIT_CLSID_FAILED;
     }
     for &ext in registry::EXTENSIONS {
-        if ops.register_extension(scope, ext).is_err() {
+        if thumbnail_exts.contains(&ext) && ops.register_extension(scope, ext).is_err() {
             return EXIT_EXTENSION_FAILED;
         }
-        if ops.register_preview_extension(scope, ext).is_err() {
+        if preview && ops.register_preview_extension(scope, ext).is_err() {
             return EXIT_EXTENSION_FAILED;
         }
+    }
+    if ops.record_known_extensions(scope).is_err() {
+        return EXIT_CLSID_FAILED;
     }
     // Tell Explorer to drop its icon/thumbnail cache so the freshly
     // registered handlers take effect without a reboot — this is what
@@ -148,6 +192,15 @@ mod tests {
         calls: RefCell<Vec<String>>,
         fail_on: RefCell<Vec<String>>,
         notify_called: RefCell<bool>,
+        /// Registry state an earlier install left behind. `None` means
+        /// nothing is installed (the default).
+        previous: Option<PreviousInstall>,
+    }
+
+    struct PreviousInstall {
+        bound: Vec<&'static str>,
+        preview: bool,
+        known: Option<Vec<String>>,
     }
 
     impl MockCliOps {
@@ -158,7 +211,24 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 fail_on: RefCell::new(Vec::new()),
                 notify_called: RefCell::new(false),
+                previous: None,
             }
+        }
+
+        /// Pretend an install by a build that offered `known` is in
+        /// place, with only `bound` still ticked in the GUI.
+        fn upgrading_from(
+            mut self,
+            bound: &[&'static str],
+            preview: bool,
+            known: Option<&[&str]>,
+        ) -> Self {
+            self.previous = Some(PreviousInstall {
+                bound: bound.to_vec(),
+                preview,
+                known: known.map(|k| k.iter().map(|e| e.to_string()).collect()),
+            });
+            self
         }
 
         fn without_dll(mut self) -> Self {
@@ -201,6 +271,23 @@ mod tests {
         fn current_scope(&self) -> Scope {
             self.scope
         }
+        fn is_clsid_registered(&self, _scope: Scope) -> bool {
+            self.previous.is_some()
+        }
+        fn is_extension_registered(&self, _scope: Scope, ext: &'static str) -> bool {
+            self.previous
+                .as_ref()
+                .is_some_and(|p| p.bound.contains(&ext))
+        }
+        fn is_preview_enabled(&self, _scope: Scope) -> bool {
+            self.previous.as_ref().is_some_and(|p| p.preview)
+        }
+        fn known_extensions(&self, _scope: Scope) -> Option<Vec<String>> {
+            self.previous.as_ref().and_then(|p| p.known.clone())
+        }
+        fn record_known_extensions(&self, scope: Scope) -> io::Result<()> {
+            self.record(format!("record_known_extensions:{}", tag(scope)))
+        }
         fn register_clsid(&self, scope: Scope, _dll_path: &Path) -> io::Result<()> {
             self.record(format!("register_clsid:{}", tag(scope)))
         }
@@ -242,8 +329,10 @@ mod tests {
         // Both CLSIDs first, in thumbnail → preview order.
         assert_eq!(calls[0], "register_clsid:user");
         assert_eq!(calls[1], "register_preview_clsid:user");
-        // Then thumbnail + preview bindings for every extension.
-        assert_eq!(calls.len(), 2 + registry::EXTENSIONS.len() * 2);
+        // Then thumbnail + preview bindings for every extension, and
+        // the known-extension list last.
+        assert_eq!(calls.len(), 2 + registry::EXTENSIONS.len() * 2 + 1);
+        assert_eq!(calls.last().unwrap(), "record_known_extensions:user");
         for (i, &ext) in registry::EXTENSIONS.iter().enumerate() {
             assert_eq!(calls[2 + i * 2], format!("register_extension:user:{ext}"));
             assert_eq!(
@@ -306,6 +395,83 @@ mod tests {
         let ops = MockCliOps::new().fail_on(&format!("register_preview_extension:user:{ext}"));
         assert_eq!(run_install(&ops), EXIT_EXTENSION_FAILED);
         assert!(!*ops.notify_called.borrow());
+    }
+
+    #[test]
+    fn install_returns_3_when_recording_known_extensions_fails() {
+        let ops = MockCliOps::new().fail_on("record_known_extensions:user");
+        assert_eq!(run_install(&ops), EXIT_CLSID_FAILED);
+        assert!(!*ops.notify_called.borrow());
+    }
+
+    // ----- run_install over an existing install ---------------------------
+
+    #[test]
+    fn upgrade_keeps_extensions_the_user_switched_off() {
+        let all = registry::EXTENSIONS;
+        let bound: Vec<&'static str> = all.iter().copied().filter(|&e| e != ".zip").collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, Some(all));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(!calls.contains(&"register_extension:user:.zip".to_string()));
+        for &ext in &bound {
+            assert!(calls.contains(&format!("register_extension:user:{ext}")));
+        }
+        // The DLL path may have moved, so the CLSID is always rewritten.
+        assert!(calls.contains(&"register_clsid:user".to_string()));
+        // Preview is one switch for every extension, `.zip` included.
+        assert!(calls.contains(&"register_preview_extension:user:.zip".to_string()));
+        assert!(*ops.notify_called.borrow());
+    }
+
+    #[test]
+    fn upgrade_keeps_the_preview_pane_switched_off() {
+        let all = registry::EXTENSIONS;
+        let ops = MockCliOps::new().upgrading_from(all, false, Some(all));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(calls.iter().all(|c| !c.starts_with("register_preview_")));
+        assert_eq!(
+            calls.len(),
+            1 + all.len() + 1,
+            "thumbnail CLSID, every thumbnail binding, known list"
+        );
+    }
+
+    #[test]
+    fn upgrade_enables_extensions_the_previous_build_did_not_offer() {
+        // The previous build knew everything but `.epub`, so its missing
+        // binding is "new format", not "switched off".
+        let all = registry::EXTENSIONS;
+        let known: Vec<&str> = all.iter().copied().filter(|&e| e != ".epub").collect();
+        let bound: Vec<&'static str> = all
+            .iter()
+            .copied()
+            .filter(|&e| e != ".epub" && e != ".rar")
+            .collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, Some(&known));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(calls.contains(&"register_extension:user:.epub".to_string()));
+        assert!(!calls.contains(&"register_extension:user:.rar".to_string()));
+    }
+
+    #[test]
+    fn upgrade_from_a_build_without_a_known_list_uses_the_frozen_one() {
+        let bound: Vec<&'static str> = registry::PRE_TRACKING_EXTENSIONS
+            .iter()
+            .copied()
+            .filter(|&e| e != ".cbz")
+            .collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, None);
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(!calls.contains(&"register_extension:user:.cbz".to_string()));
+        assert!(calls.contains(&"record_known_extensions:user".to_string()));
     }
 
     // ----- run_uninstall --------------------------------------------------
