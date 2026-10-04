@@ -18,13 +18,23 @@ name = "arcthumb-config"
 path = "src/bin/arcthumb-config/main.rs"
 
 [features]
-default = []
-# JPEG XL decoding via the pure-Rust jxl-oxide crate.
-# Disabled by default because it adds ~2.3 MB to the DLL
-# (jxl-oxide pulls in rayon, tracing, brotli-decompressor, etc.)
-# for a format that is not yet widely deployed.
-# Enable with: cargo build --release --features jxl
-jxl = ["dep:jxl-oxide"]
+default = ["jxl"]
+# JPEG XL decoding via jxl-rs (the `jxl` crate), the pure-Rust
+# decoder that Chrome and Firefox both ship. Reaches the `image`
+# crate through `jxl-image-rs-integration`.
+#
+# On by default. It costs ~2.3 MB of DLL (2.62 -> 4.96 MB), which is
+# the price of shipping one build that handles .jxl without making
+# the user pick an installer variant.
+#
+# `jxl_simd` picks its code path at runtime with
+# `is_x86_feature_detected!`, so these flags only decide what gets
+# compiled in. We take sse42 + avx and skip avx512, which costs
+# another ~435 KB and is fused off on consumer Intel chips from 12th
+# gen onward.
+#
+# Build without it with: cargo build --release --no-default-features
+jxl = ["dep:jxl-image-rs-integration"]
 
 [dependencies]
 windows-core = "0.62"
@@ -71,7 +81,10 @@ image = { version = "0.25", default-features = false, features = [
 # compiled. Only used for large-JPEG sources; other formats skip
 # this decoder entirely.
 jpeg-decoder = "0.3"
-jxl-oxide = { version = "0.12", features = ["image"], optional = true }
+jxl-image-rs-integration = { version = "0.7", optional = true, default-features = false, features = [
+    "sse42",
+    "avx",
+] }
 # Pure-Rust glyph rasteriser for the identification-label overlay
 # baked into thumbnails. We embed a tiny A–Z/0–9 subset of Roboto
 # Bold (see assets/fonts/) so labels stay crisp at every Explorer

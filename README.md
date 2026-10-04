@@ -47,7 +47,9 @@ No pressure. Starring the repo or sending a clear bug report is worth just as mu
 
 ### Image formats inside archives
 
-JPEG, PNG, GIF, BMP, TIFF, ICO, and WebP. Each format can be individually enabled or disabled in the configuration GUI. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
+JPEG, PNG, GIF, BMP, TIFF, ICO, WebP, and JPEG XL. Each format can be individually enabled or disabled in the configuration GUI. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
+
+JPEG XL decoding uses [jxl-rs](https://github.com/libjxl/jxl-rs), the pure-Rust decoder from the JPEG XL project that Chrome and Firefox also ship. It is compiled in by default and costs about 2.3 MB of DLL; `cargo build --release --no-default-features` leaves it out.
 
 ## Installing
 
@@ -62,7 +64,7 @@ Open **ArcThumb Configuration** from the Start menu.
 ![ArcThumb Configuration dialog with extension toggles, sort order, cover preference and the Regenerate thumbnails button](assets/screenshot.png)
 
 - **Enabled extensions** turns ArcThumb on or off per file extension, for both the thumbnail and the preview pane. If another program's handler was registered for an extension, ArcThumb puts it back when you turn that extension off or uninstall.
-- **Image formats used for thumbnails** chooses which image formats (JPEG, PNG, GIF, BMP, TIFF, WebP, ICO) are eligible when picking a thumbnail from inside an archive. Disabling a format causes ArcThumb to skip files with that extension. This setting does not affect ebooks (EPUB, FB2, MOBI), which use their own metadata to locate the cover.
+- **Image formats used for thumbnails** chooses which image formats (JPEG, PNG, GIF, BMP, TIFF, WebP, ICO, JPEG XL) are eligible when picking a thumbnail from inside an archive. Disabling a format causes ArcThumb to skip files with that extension. This setting does not affect ebooks (EPUB, FB2, MOBI), which use their own metadata to locate the cover.
 - **Sort order** decides which image counts as "the first one" inside an archive. Natural sort treats `page2.jpg` as smaller than `page10.jpg`. Alphabetical does the opposite. Natural is the default and is usually what you want for comics.
 - **Cover image** controls how ArcThumb treats files named `cover.*`, `folder.*`, `thumb.*`, `thumbnail.*`, or `front.*` (matched without regard to case). *Use cover if present, else first page* is the default: it picks one of those names when the archive has one and otherwise falls back to sort order. *Cover only* uses one of those names and shows no thumbnail at all when none exists, so an unrelated ZIP that happens to contain a stray image keeps the plain archive icon instead of borrowing it as a cover. *Always use first page* ignores the names and takes the first image by sort order.
 - **Enable preview pane** is a single switch that registers or unregisters the `IPreviewHandler` for every enabled extension at once.
