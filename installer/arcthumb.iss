@@ -116,7 +116,3 @@ Filename: "{app}\{#MyAppExeName}"; \
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall"; \
     RunOnceId: "ArcThumbUnregister"; \
     Flags: runhidden waituntilterminated
-
-[UninstallDelete]
-; Make sure the install dir disappears even if log files etc. exist.
-Type: filesandordirs; Name: "{app}"
