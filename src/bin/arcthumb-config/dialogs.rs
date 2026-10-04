@@ -16,6 +16,12 @@
 //!   2. Clears the `thread_local` slot, dropping the last strong
 //!      reference and letting Slint reclaim the component.
 //!
+//! The title-bar close button goes through `on_close_requested`
+//! instead and has to clear the same slot, otherwise the "already
+//! open" check keeps the dialog from ever opening again. There the
+//! slot is cleared on the next event-loop turn, so the component is
+//! not dropped while Slint is still closing its window.
+//!
 //! `arcthumb-config` only ever has one UI thread (the Slint event
 //! loop runs there), so the thread-locals are both safe and the
 //! natural home for dialog handles.
@@ -29,8 +35,10 @@
 //! out is a pure file-level split with no behaviour change.
 
 use std::cell::RefCell;
+use std::thread::LocalKey;
+use std::time::Duration;
 
-use slint::{ComponentHandle, SharedString};
+use slint::{CloseRequestResponse, ComponentHandle, SharedString, Timer};
 
 use crate::locale::Strings;
 use crate::ui::{AboutDialog, DonationDialog, UpdateDialog};
@@ -40,6 +48,14 @@ thread_local! {
     static ABOUT_DIALOG: RefCell<Option<AboutDialog>> = const { RefCell::new(None) };
     static UPDATE_DIALOG: RefCell<Option<UpdateDialog>> = const { RefCell::new(None) };
     static DONATION_DIALOG: RefCell<Option<DonationDialog>> = const { RefCell::new(None) };
+}
+
+/// Drop the dialog held in `slot` once the current event has been
+/// handled. Used from `on_close_requested`.
+fn clear_slot_soon<T: 'static>(slot: &'static LocalKey<RefCell<Option<T>>>) {
+    Timer::single_shot(Duration::ZERO, move || {
+        slot.with(|h| *h.borrow_mut() = None);
+    });
 }
 
 // =============================================================================
@@ -72,6 +88,10 @@ pub fn show_about(strings: &Strings) {
             let _ = w.hide();
         }
         ABOUT_DIALOG.with(|h| *h.borrow_mut() = None);
+    });
+    dialog.window().on_close_requested(|| {
+        clear_slot_soon(&ABOUT_DIALOG);
+        CloseRequestResponse::HideWindow
     });
 
     if dialog.show().is_ok() {
@@ -135,6 +155,21 @@ pub fn show_update_dialog(info: update::UpdateInfo, strings: &'static Strings) {
                 let _ = d.hide();
             }
             UPDATE_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    // Title-bar close. Same as "remind me later".
+    {
+        let weak = dialog.as_weak();
+        let latest_version = info.latest_version.clone();
+        dialog.window().on_close_requested(move || {
+            if let Some(d) = weak.upgrade()
+                && d.get_skip_checked()
+            {
+                update::skip_version(&latest_version);
+            }
+            clear_slot_soon(&UPDATE_DIALOG);
+            CloseRequestResponse::HideWindow
         });
     }
 
@@ -202,6 +237,22 @@ pub fn show_donation_dialog(version: &str, strings: &'static Strings) {
                 let _ = d.hide();
             }
             DONATION_DIALOG.with(|h| *h.borrow_mut() = None);
+        });
+    }
+
+    // Title-bar close. Same as "maybe next time".
+    {
+        let weak = dialog.as_weak();
+        dialog.window().on_close_requested(move || {
+            if let Some(d) = weak.upgrade() {
+                if d.get_dont_show_checked() {
+                    update::dismiss_donation();
+                } else {
+                    update::record_donation_skip();
+                }
+            }
+            clear_slot_soon(&DONATION_DIALOG);
+            CloseRequestResponse::HideWindow
         });
     }
 
