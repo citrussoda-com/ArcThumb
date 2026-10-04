@@ -1,7 +1,7 @@
 // Slint UI for arcthumb-config.exe.
 //
 // Exported components:
-//   * MainWindow    — settings dialog with File / Help menu bar.
+//   * MainWindow    — tabbed settings dialog with File / Help menu bar.
 //   * AboutDialog   — shows ArcThumb version up top and the Slint
 //                     attribution widget below (required by the
 //                     Slint Royalty-Free License 2.0). Reached via
@@ -24,6 +24,7 @@ import {
     GroupBox,
     HorizontalBox,
     ScrollView,
+    TabWidget,
     VerticalBox,
 } from "std-widgets.slint";
 
@@ -36,17 +37,37 @@ export struct ExtensionEntry {
     enabled: bool,
 }
 
+// Body of one tab: a scrollable column that keeps its children at
+// their natural height and leaves any spare room below them.
+component TabPage inherits ScrollView {
+    VerticalLayout {
+        padding: 10px;
+        spacing: 6px;
+        @children
+        // Soak up extra height so the widgets above don't stretch
+        // when the window is resized taller.
+        Rectangle { vertical-stretch: 1; }
+    }
+}
+
+// Note under settings whose effect is baked into cached thumbnails.
+// With tabs the Regenerate button is no longer next to them, so the
+// connection has to be spelled out where the setting is.
+component RegenHint inherits Text {
+    vertical-stretch: 0;
+    wrap: word-wrap;
+    opacity: 0.7;
+}
+
 export component MainWindow inherits Window {
     title: root.window_title;
     icon: @image-url("../assets/icon.png");
     preferred-width: 520px;
-    // Default size fits every section without scrolling. If the user
-    // shrinks the window below what the content needs, the ScrollView
-    // around the body engages so the footer buttons stay reachable —
-    // that's why `min-height` is much smaller than `preferred-height`.
-    preferred-height: 600px;
+    // Sized for the tallest tab (Files). The TabWidget gives every tab
+    // the same area, so switching tabs never resizes the window.
+    preferred-height: 400px;
     min-width: 500px;
-    min-height: 320px;
+    min-height: 300px;
 
     // ---- Localized labels (set from Rust at startup) -------------
     in property <string> window_title;
@@ -56,6 +77,10 @@ export component MainWindow inherits Window {
     in property <string> menu_help_check_updates;
     in property <string> menu_help_donate;
     in property <string> menu_help_about;
+    in property <string> tab_files;
+    in property <string> tab_thumbnail;
+    in property <string> tab_display;
+    in property <string> tab_preview;
     in property <string> group_extensions;
     in property <string> group_image_exts;
     in property <string> group_sort;
@@ -65,7 +90,8 @@ export component MainWindow inherits Window {
     in property <string> cover_prefer_label;
     in property <string> cover_only_label;
     in property <string> cover_ignore_label;
-    in property <string> group_other;
+    in property <string> group_overlay;
+    in property <string> regen_hint;
     in property <string> enable_preview_label;
     in property <string> overlay_border_label;
     in property <string> overlay_label_label;
@@ -135,126 +161,145 @@ export component MainWindow inherits Window {
         }
     }
 
-    // Layout note (resize behaviour):
+    // Layout note:
     //
-    // The body is wrapped in a `ScrollView` so the footer button row
-    // (OK / Cancel / Apply / Regenerate) is always reachable even when
-    // the user shrinks the window below the content's natural height.
-    // The ScrollView takes all leftover vertical space (`vertical-stretch: 1`)
-    // and engages a scrollbar only when needed. Every content widget
-    // stays `vertical-stretch: 0` so sections keep their natural height
-    // — at sizes larger than the content needs, the empty space sits
-    // inside the ScrollView's viewport below the last section, the same
-    // place the old stretchy spacer used to put it.
+    // The settings are split into tabs by when you reach for them, not
+    // by feature. The footer button row (OK / Cancel / Apply /
+    // Regenerate) sits outside the TabWidget because it acts on every
+    // tab at once; inside a tab it would read as "apply this tab only".
+    //
+    // Each tab body is a `TabPage`, which wraps its content in a
+    // `ScrollView`. At the default size nothing scrolls. If the user
+    // shrinks the window below what a tab needs, that tab scrolls and
+    // the footer stays reachable — that's why `min-height` is smaller
+    // than `preferred-height`.
     VerticalBox {
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: 0px;
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
         padding-bottom: 10px;
-        spacing: 0px;
+        spacing: 6px;
 
-        ScrollView {
+        TabWidget {
             vertical-stretch: 1;
-            VerticalLayout {
-                spacing: 0px;
 
-                GroupBox {
-                    vertical-stretch: 0;
-                    title: root.group_extensions;
-                    // 6 columns wide, row-major. We compute the row/col
-                    // from the iteration index `i` so the layout follows
-                    // `arcthumb::registry::EXTENSIONS` order automatically.
-                    // `Math.floor` and `Math.mod` are needed because Slint
-                    // returns a float from `int / int`.
-                    GridLayout {
-                        spacing: 8px;
-                        for entry[i] in root.extensions: CheckBox {
-                            row: Math.floor(i / 6);
-                            col: Math.mod(i, 6);
-                            vertical-stretch: 0;
-                            text: entry.name;
-                            checked: entry.enabled;
-                            toggled => {
-                                root.toggle_extension(i);
+            Tab {
+                title: root.tab_files;
+                TabPage {
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_extensions;
+                        // 6 columns wide, row-major. We compute the row/col
+                        // from the iteration index `i` so the layout follows
+                        // `arcthumb::registry::EXTENSIONS` order automatically.
+                        // `Math.floor` and `Math.mod` are needed because Slint
+                        // returns a float from `int / int`.
+                        GridLayout {
+                            spacing: 8px;
+                            for entry[i] in root.extensions: CheckBox {
+                                row: Math.floor(i / 6);
+                                col: Math.mod(i, 6);
+                                vertical-stretch: 0;
+                                text: entry.name;
+                                checked: entry.enabled;
+                                toggled => {
+                                    root.toggle_extension(i);
+                                }
+                            }
+                        }
+                    }
+
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_image_exts;
+                        GridLayout {
+                            spacing: 8px;
+                            for entry[i] in root.image_extensions: CheckBox {
+                                row: Math.floor(i / 6);
+                                col: Math.mod(i, 6);
+                                vertical-stretch: 0;
+                                text: entry.name;
+                                checked: entry.enabled;
+                                toggled => {
+                                    root.toggle_image_extension(i);
+                                }
                             }
                         }
                     }
                 }
+            }
 
-                GroupBox {
-                    vertical-stretch: 0;
-                    title: root.group_image_exts;
-                    GridLayout {
-                        spacing: 8px;
-                        for entry[i] in root.image_extensions: CheckBox {
-                            row: Math.floor(i / 6);
-                            col: Math.mod(i, 6);
+            Tab {
+                title: root.tab_thumbnail;
+                TabPage {
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_sort;
+                        ComboBox {
                             vertical-stretch: 0;
-                            text: entry.name;
-                            checked: entry.enabled;
-                            toggled => {
-                                root.toggle_image_extension(i);
+                            model: [root.sort_natural_label, root.sort_alpha_label];
+                            // Two-way (`<=>`) is required, not a one-way binding:
+                            // the ComboBox writes current-index internally at
+                            // init, which severs a one-way binding and leaves the
+                            // dropdown stuck on the first item after load.
+                            current-index <=> root.sort_index;
+                        }
+                    }
+
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_cover;
+                        ComboBox {
+                            vertical-stretch: 0;
+                            model: [
+                                root.cover_prefer_label,
+                                root.cover_only_label,
+                                root.cover_ignore_label,
+                            ];
+                            // Two-way (`<=>`) is required — see the sort
+                            // ComboBox above for why a one-way binding breaks.
+                            current-index <=> root.cover_mode;
+                        }
+                    }
+
+                    RegenHint { text: root.regen_hint; }
+                }
+            }
+
+            Tab {
+                title: root.tab_display;
+                TabPage {
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_overlay;
+                        VerticalLayout {
+                            spacing: 6px;
+                            CheckBox {
+                                vertical-stretch: 0;
+                                text: root.overlay_border_label;
+                                checked <=> root.overlay_border;
+                            }
+                            CheckBox {
+                                vertical-stretch: 0;
+                                text: root.overlay_label_label;
+                                checked <=> root.overlay_label;
                             }
                         }
                     }
-                }
 
-                GroupBox {
-                    vertical-stretch: 0;
-                    title: root.group_sort;
-                    ComboBox {
+                    RegenHint { text: root.regen_hint; }
+                }
+            }
+
+            Tab {
+                title: root.tab_preview;
+                TabPage {
+                    CheckBox {
                         vertical-stretch: 0;
-                        model: [root.sort_natural_label, root.sort_alpha_label];
-                        // Two-way (`<=>`) is required, not a one-way binding:
-                        // the ComboBox writes current-index internally at
-                        // init, which severs a one-way binding and leaves the
-                        // dropdown stuck on the first item after load.
-                        current-index <=> root.sort_index;
+                        text: root.enable_preview_label;
+                        checked <=> root.enable_preview;
                     }
                 }
-
-                GroupBox {
-                    vertical-stretch: 0;
-                    title: root.group_cover;
-                    ComboBox {
-                        vertical-stretch: 0;
-                        model: [
-                            root.cover_prefer_label,
-                            root.cover_only_label,
-                            root.cover_ignore_label,
-                        ];
-                        // Two-way (`<=>`) is required — see the sort
-                        // ComboBox above for why a one-way binding breaks.
-                        current-index <=> root.cover_mode;
-                    }
-                }
-
-                GroupBox {
-                    vertical-stretch: 0;
-                    title: root.group_other;
-                    VerticalLayout {
-                        spacing: 6px;
-                        CheckBox {
-                            vertical-stretch: 0;
-                            text: root.enable_preview_label;
-                            checked <=> root.enable_preview;
-                        }
-                        CheckBox {
-                            vertical-stretch: 0;
-                            text: root.overlay_border_label;
-                            checked <=> root.overlay_border;
-                        }
-                        CheckBox {
-                            vertical-stretch: 0;
-                            text: root.overlay_label_label;
-                            checked <=> root.overlay_label;
-                        }
-                    }
-                }
-
-                // Soak up extra height so the GroupBoxes and ComboBoxes
-                // above don't stretch when the window is resized taller.
-                Rectangle { vertical-stretch: 1; }
             }
         }
 
@@ -442,6 +487,10 @@ export component MainWindowPreview inherits MainWindow {
     menu_help_check_updates: "更新を確認";
     menu_help_donate: "ArcThumb を支援する";
     menu_help_about: "ArcThumb について";
+    tab_files: "対象ファイル";
+    tab_thumbnail: "サムネイル";
+    tab_display: "表示";
+    tab_preview: "プレビュー";
     group_extensions: "有効にする拡張子";
     group_image_exts: "サムネイルに使う画像形式 (アーカイブ内)";
     group_sort: "並び順";
@@ -451,7 +500,8 @@ export component MainWindowPreview inherits MainWindow {
     cover_prefer_label: "カバーを優先（無ければ先頭ページ）";
     cover_only_label: "カバーがあるときだけ表示（無ければ通常アイコン）";
     cover_ignore_label: "常に先頭ページを使う";
-    group_other: "その他の設定";
+    group_overlay: "識別オーバーレイ";
+    regen_hint: "作成済みのサムネイルに反映するには「サムネイルを再生成」を実行してください。";
     enable_preview_label: "プレビュー ウィンドウを有効にする (Alt+P)";
     overlay_border_label: "アーカイブを色付きの枠線で示す";
     overlay_label_label: "アーカイブにフォーマットラベルを表示 (CBZ, EPUB, ...)";

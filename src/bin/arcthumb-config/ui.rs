@@ -207,6 +207,10 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_menu_help_check_updates(SharedString::from(s.menu_help_check_updates));
     window.set_menu_help_donate(SharedString::from(s.menu_help_donate));
     window.set_menu_help_about(SharedString::from(s.menu_help_about));
+    window.set_tab_files(SharedString::from(s.tab_files));
+    window.set_tab_thumbnail(SharedString::from(s.tab_thumbnail));
+    window.set_tab_display(SharedString::from(s.tab_display));
+    window.set_tab_preview(SharedString::from(s.tab_preview));
     window.set_group_extensions(SharedString::from(s.group_extensions));
     window.set_group_image_exts(SharedString::from(s.group_image_exts));
     window.set_group_sort(SharedString::from(s.group_sort));
@@ -216,7 +220,8 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_cover_prefer_label(SharedString::from(s.cover_prefer));
     window.set_cover_only_label(SharedString::from(s.cover_only));
     window.set_cover_ignore_label(SharedString::from(s.cover_ignore));
-    window.set_group_other(SharedString::from(s.group_other));
+    window.set_group_overlay(SharedString::from(s.group_overlay));
+    window.set_regen_hint(SharedString::from(s.regen_hint));
     window.set_enable_preview_label(SharedString::from(s.cb_enable_preview));
     window.set_overlay_border_label(SharedString::from(s.cb_overlay_border));
     window.set_overlay_label_label(SharedString::from(s.cb_overlay_label));
@@ -614,7 +619,12 @@ mod tests {
             assert_eq!(window.get_cover_prefer_label(), locale::EN.cover_prefer);
             assert_eq!(window.get_cover_only_label(), locale::EN.cover_only);
             assert_eq!(window.get_cover_ignore_label(), locale::EN.cover_ignore);
-            assert_eq!(window.get_group_other(), locale::EN.group_other);
+            assert_eq!(window.get_tab_files(), locale::EN.tab_files);
+            assert_eq!(window.get_tab_thumbnail(), locale::EN.tab_thumbnail);
+            assert_eq!(window.get_tab_display(), locale::EN.tab_display);
+            assert_eq!(window.get_tab_preview(), locale::EN.tab_preview);
+            assert_eq!(window.get_group_overlay(), locale::EN.group_overlay);
+            assert_eq!(window.get_regen_hint(), locale::EN.regen_hint);
             assert_eq!(
                 window.get_enable_preview_label(),
                 locale::EN.cb_enable_preview
