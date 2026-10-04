@@ -11,17 +11,16 @@ pub(super) fn tar_read_first_image<R: Read + Seek>(
     mut reader: R,
     settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
-    // Pass 1: walk the archive and collect image entry names.
-    // The block scope drops the `tar::Archive` (and its borrow of
-    // `reader`) before we seek for pass 2.
-    let target: String = {
+    // Pass 1: walk the archive and collect image entries, each with
+    // its position in the archive. The block scope drops the
+    // `tar::Archive` (and its borrow of `reader`) before we seek for
+    // pass 2.
+    let (target_index, target): (usize, String) = {
         reader.seek(SeekFrom::Start(0))?;
         let mut archive = tar::Archive::new(&mut reader);
-        let mut candidates: Vec<String> = Vec::new();
-        let mut entry_count: usize = 0;
-        for entry in archive.entries()? {
-            entry_count += 1;
-            if entry_count > limits::MAX_ARCHIVE_ENTRIES {
+        let mut candidates: Vec<(usize, String)> = Vec::new();
+        for (index, entry) in archive.entries()?.enumerate() {
+            if index >= limits::MAX_ARCHIVE_ENTRIES {
                 return Err(format!(
                     "archive has too many entries (> {} limit)",
                     limits::MAX_ARCHIVE_ENTRIES
@@ -35,10 +34,13 @@ pub(super) fn tar_read_first_image<R: Read + Seek>(
             if entry.size() > limits::MAX_ENTRY_SIZE {
                 continue;
             }
-            let path = entry.path()?;
-            let name = path.to_string_lossy().into_owned();
+            // `path_bytes`, not `path`: on Windows `path()` fails for a
+            // name that isn't UTF-8, and one Shift_JIS name would then
+            // take the whole archive down with it. A lossy name is good
+            // enough to sort and to check the extension.
+            let name = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
             if settings.accepts_image_ext(&name) {
-                candidates.push(name);
+                candidates.push((index, name));
             }
         }
         settings
@@ -46,14 +48,14 @@ pub(super) fn tar_read_first_image<R: Read + Seek>(
             .ok_or("archive contains no (small enough) image files")?
     };
 
-    // Pass 2: walk again, extract the target.
+    // Pass 2: walk again and extract the entry at the chosen position.
+    // Matching on position instead of on the name means a second entry
+    // with the same name can't stand in for the one that was picked.
     reader.seek(SeekFrom::Start(0))?;
     let mut archive = tar::Archive::new(&mut reader);
-    for entry in archive.entries()? {
+    for (index, entry) in archive.entries()?.enumerate() {
         let entry = entry?;
-        let path = entry.path()?;
-        let name = path.to_string_lossy().into_owned();
-        if name == target {
+        if index == target_index {
             let size = entry.size();
             let buf = limits::read_capped(entry, size, limits::MAX_ENTRY_SIZE)?;
             return Ok((target, buf));
@@ -103,6 +105,57 @@ mod tests {
         let (name, bytes) = read_first_image(tar, &Settings::default()).expect("read_first_image");
         assert_eq!(name, "page1.png");
         assert_eq!(bytes, b"ONE");
+    }
+
+    /// Like `build_tar`, but takes raw name bytes so a name that is not
+    /// UTF-8 can be written. `tar::Builder::append_data` only accepts
+    /// paths, which on Windows must be Unicode.
+    fn build_raw_tar(entries: &[(&[u8], &[u8])]) -> Cursor<Vec<u8>> {
+        let mut buf = Vec::new();
+        for (name, body) in entries {
+            let mut header = tar::Header::new_ustar();
+            header.as_old_mut().name[..name.len()].copy_from_slice(name);
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_cksum();
+            buf.extend_from_slice(header.as_bytes());
+            buf.extend_from_slice(body);
+            buf.resize(buf.len().next_multiple_of(512), 0);
+        }
+        buf.extend_from_slice(&[0u8; 1024]); // end-of-archive marker
+        Cursor::new(buf)
+    }
+
+    #[test]
+    fn tar_with_a_non_utf8_name_still_yields_a_thumbnail() {
+        // "表紙.txt" in Shift_JIS, followed by an ordinary image.
+        let sjis_name: &[u8] = b"\x95\x5c\x8e\x86.txt";
+        let tar = build_raw_tar(&[(sjis_name, b"notes"), (b"page1.png", b"image bytes")]);
+        let (name, bytes) = read_first_image(tar, &Settings::default()).expect("tar read");
+        assert_eq!(name, "page1.png");
+        assert_eq!(bytes, b"image bytes");
+    }
+
+    #[test]
+    fn tar_image_with_a_non_utf8_name_is_extracted() {
+        let sjis_name: &[u8] = b"\x95\x5c\x8e\x86.png";
+        let tar = build_raw_tar(&[(sjis_name, b"image bytes")]);
+        let (name, bytes) = read_first_image(tar, &Settings::default()).expect("tar read");
+        assert!(
+            name.ends_with(".png"),
+            "lossy name keeps the extension: {name}"
+        );
+        assert_eq!(bytes, b"image bytes");
+    }
+
+    #[test]
+    fn tar_duplicate_names_extract_the_picked_entry() {
+        // Sorting is stable, so the first `a.png` is the one picked,
+        // and it is the one that has to come back.
+        let tar = build_raw_tar(&[(b"a.png", b"first"), (b"a.png", b"second")]);
+        let (_, bytes) = read_first_image(tar, &Settings::default()).expect("tar read");
+        assert_eq!(bytes, b"first");
     }
 
     #[test]
