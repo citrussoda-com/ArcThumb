@@ -45,7 +45,9 @@ pub fn from_rgba(img: &image::RgbaImage) -> Result<HBITMAP> {
     // Premultiply RGBA → BGRA into the DIB section buffer.
     unsafe {
         let dst = std::slice::from_raw_parts_mut(bits as *mut u8, pixel_count * 4);
-        for (src_px, dst_px) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+        let (src_chunks, _) = src.as_chunks::<4>();
+        let (dst_chunks, _) = dst.as_chunks_mut::<4>();
+        for (src_px, dst_px) in src_chunks.iter().zip(dst_chunks) {
             let (r, g, b, a) = (src_px[0], src_px[1], src_px[2], src_px[3]);
             dst_px[0] = premul(b, a);
             dst_px[1] = premul(g, a);
