@@ -5,11 +5,13 @@
 //! touching the real registry. [`RealCliOps`] is the thin production
 //! implementation that forwards to `arcthumb::registry`.
 //!
-//! Exit codes (consumed by the Inno Setup installer — keep stable):
+//! Exit codes (the Inno Setup installer checks `--install` for
+//! non-zero — keep stable):
 //! - `0` success
 //! - `2` arcthumb.dll not found (`--install` only)
 //! - `3` CLSID registration failed
 //! - `4` extension binding failed
+//! - `6` some registry entries could not be removed (`--uninstall` only)
 //!
 //! (Exit code `5` — GUI init failure — lives in `main.rs`; it is not
 //! part of the CLI drivers.)
@@ -25,6 +27,7 @@ pub const EXIT_OK: i32 = 0;
 pub const EXIT_DLL_NOT_FOUND: i32 = 2;
 pub const EXIT_CLSID_FAILED: i32 = 3;
 pub const EXIT_EXTENSION_FAILED: i32 = 4;
+pub const EXIT_UNINSTALL_INCOMPLETE: i32 = 6;
 
 /// The side effects the CLI drivers need. Production uses
 /// [`RealCliOps`]; tests inject a recording mock.
@@ -165,17 +168,27 @@ pub fn run_install(ops: &dyn CliOps) -> i32 {
 /// switched modes between versions, or an old per-user install may
 /// still be lying around when a new per-machine install is being
 /// uninstalled.
+///
+/// A failure never stops the sweep, but it is reported: an entry that
+/// is already absent counts as removed, so any error here is a key
+/// that exists and could not be deleted (typically access denied on
+/// HKLM without elevation).
 pub fn run_uninstall(ops: &dyn CliOps) -> i32 {
+    let mut complete = true;
     for scope in Scope::ALL.iter().copied() {
         for &ext in registry::EXTENSIONS {
-            let _ = ops.unregister_extension(scope, ext);
-            let _ = ops.unregister_preview_extension(scope, ext);
+            complete &= ops.unregister_extension(scope, ext).is_ok();
+            complete &= ops.unregister_preview_extension(scope, ext).is_ok();
         }
-        let _ = ops.unregister_clsid(scope);
-        let _ = ops.unregister_preview_clsid(scope);
+        complete &= ops.unregister_clsid(scope).is_ok();
+        complete &= ops.unregister_preview_clsid(scope).is_ok();
     }
     ops.notify_assoc_changed();
-    EXIT_OK
+    if complete {
+        EXIT_OK
+    } else {
+        EXIT_UNINSTALL_INCOMPLETE
+    }
 }
 
 #[cfg(test)]
@@ -500,10 +513,18 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_is_best_effort_and_still_succeeds_on_failures() {
+    fn uninstall_reports_a_single_failure_without_stopping() {
+        let ops = MockCliOps::new().fail_on("unregister_clsid:machine");
+        assert_eq!(run_uninstall(&ops), EXIT_UNINSTALL_INCOMPLETE);
+        let per_scope = registry::EXTENSIONS.len() * 2 + 2;
+        assert_eq!(ops.calls.borrow().len(), per_scope * 2, "nothing skipped");
+    }
+
+    #[test]
+    fn uninstall_is_best_effort_and_reports_failures() {
         // Fail every single unregister call — typically AccessDenied
         // on HKLM from a non-elevated uninstaller. The driver must
-        // keep going, still notify Explorer, and still exit 0.
+        // keep going, still notify Explorer, and say it was incomplete.
         let ops = MockCliOps::new();
         for scope in ["machine", "user"] {
             ops.fail_on
@@ -521,7 +542,7 @@ mod tests {
                     .push(format!("unregister_preview_extension:{scope}:{ext}"));
             }
         }
-        assert_eq!(run_uninstall(&ops), EXIT_OK);
+        assert_eq!(run_uninstall(&ops), EXIT_UNINSTALL_INCOMPLETE);
         let per_scope = registry::EXTENSIONS.len() * 2 + 2;
         assert_eq!(ops.calls.borrow().len(), per_scope * 2, "nothing skipped");
         assert!(*ops.notify_called.borrow());

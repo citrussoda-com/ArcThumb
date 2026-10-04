@@ -29,6 +29,7 @@
 //! - `3` CLSID registration failed
 //! - `4` extension binding failed
 //! - `5` GUI init failed (very rare)
+//! - `6` some registry entries could not be removed (for --uninstall)
 
 // Hide the console on release builds. Debug builds keep the console
 // so `cargo run` output is visible.
@@ -65,7 +66,13 @@ fn main() {
         Some("--uninstall") => {
             attach_console();
             let code = cli::run_uninstall(&cli::RealCliOps);
-            println!("ArcThumb uninstalled.");
+            match code {
+                cli::EXIT_OK => println!("ArcThumb uninstalled."),
+                _ => eprintln!(
+                    "Error: some registry entries could not be removed. \
+                     Run again from an elevated prompt."
+                ),
+            }
             std::process::exit(code);
         }
         _ => {
