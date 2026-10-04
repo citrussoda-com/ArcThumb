@@ -30,6 +30,13 @@ use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
+use crate::limits;
+
+/// Cap on `container.xml` and the OPF. Both are small XML documents;
+/// an OPF for a book with thousands of manifest items is well under
+/// a megabyte.
+const MAX_METADATA_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+
 /// Try to extract the EPUB cover from an already-opened ZIP archive.
 ///
 /// Returns `Some((zip_path, bytes))` if a cover was found via OPF
@@ -52,10 +59,9 @@ pub fn try_extract_cover<R: Read + Seek>(
     let zip_path = join_zip_path(opf_dir, &cover_href);
 
     // Step 4: read the cover file from the ZIP
-    let mut entry = archive.by_name(&zip_path).ok()?;
-    let size = entry.size() as usize;
-    let mut bytes = Vec::with_capacity(size);
-    entry.read_to_end(&mut bytes).ok()?;
+    let entry = archive.by_name(&zip_path).ok()?;
+    let size = entry.size();
+    let bytes = limits::read_capped(entry, size, limits::MAX_ENTRY_SIZE).ok()?;
 
     Some((zip_path, bytes))
 }
@@ -70,10 +76,10 @@ fn read_entry_to_string<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Option<String> {
-    let mut entry = archive.by_name(name).ok()?;
-    let mut s = String::new();
-    entry.read_to_string(&mut s).ok()?;
-    Some(s)
+    let entry = archive.by_name(name).ok()?;
+    let size = entry.size();
+    let bytes = limits::read_capped(entry, size, MAX_METADATA_SIZE).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Strip an XML namespace prefix (`opf:item` → `item`). EPUB OPF

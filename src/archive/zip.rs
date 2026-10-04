@@ -35,9 +35,9 @@ fn try_extract_fb2_from_zip<R: Read + Seek>(
 
     // Second pass: extract that entry's bytes and pass to the FB2
     // cover extractor.
-    let mut entry = archive.by_index(fb2_index).ok()?;
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut bytes).ok()?;
+    let entry = archive.by_index(fb2_index).ok()?;
+    let size = entry.size();
+    let bytes = limits::read_capped(entry, size, limits::MAX_ENTRY_SIZE).ok()?;
     ebook::fb2::try_extract_cover(&bytes)
 }
 
@@ -107,9 +107,11 @@ pub(super) fn zip_read_first_image<R: Read + Seek>(
         .pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
-    let mut file = archive.by_index(index)?;
-    let mut buf = Vec::with_capacity(file.size() as usize);
-    file.read_to_end(&mut buf)?;
+    // The size filter above only saw the size the entry declares. The
+    // decompressor is not bound by it, so cap what we actually read.
+    let file = archive.by_index(index)?;
+    let size = file.size();
+    let buf = limits::read_capped(file, size, limits::MAX_ENTRY_SIZE)?;
 
     Ok((name, buf, ContentKind::Zip))
 }

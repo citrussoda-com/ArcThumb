@@ -50,12 +50,12 @@ pub(super) fn tar_read_first_image<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let mut archive = tar::Archive::new(&mut reader);
     for entry in archive.entries()? {
-        let mut entry = entry?;
+        let entry = entry?;
         let path = entry.path()?;
         let name = path.to_string_lossy().into_owned();
         if name == target {
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry.read_to_end(&mut buf)?;
+            let size = entry.size();
+            let buf = limits::read_capped(entry, size, limits::MAX_ENTRY_SIZE)?;
             return Ok((target, buf));
         }
     }

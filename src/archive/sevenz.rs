@@ -10,14 +10,16 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
     mut reader: R,
     settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
-    use sevenz_rust::{Password, SevenZReader};
+    use sevenz_rust::{Archive, BlockDecoder};
 
     let size = reader.seek(SeekFrom::End(0))?;
     reader.seek(SeekFrom::Start(0))?;
+    check_start_header(&mut reader, size)?;
+    reader.seek(SeekFrom::Start(0))?;
 
-    let mut sz = SevenZReader::new(reader, size, Password::empty())?;
+    let archive = Archive::read(&mut reader, size, &[])?;
 
-    let entry_count = sz.archive().files.len();
+    let entry_count = archive.files.len();
     if entry_count > limits::MAX_ARCHIVE_ENTRIES {
         return Err(format!(
             "archive has too many entries ({entry_count} > {} limit)",
@@ -28,38 +30,83 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
 
     // The 7z metadata lives in the footer, which SevenZReader::new has
     // already parsed — so we can list all entry names without reading
-    // any compressed data.
-    let candidates: Vec<String> = sz
-        .archive()
+    // any compressed data. Candidates carry their file index so the
+    // extraction below matches on it instead of on the name, which
+    // need not be unique.
+    let candidates: Vec<(usize, String)> = archive
         .files
         .iter()
-        .filter(|f| {
+        .enumerate()
+        .filter(|(_, f)| {
             !f.is_directory()
                 && settings.accepts_image_ext(&f.name)
                 && f.size <= limits::MAX_ENTRY_SIZE
         })
-        .map(|f| f.name.clone())
+        .map(|(i, f)| (i, f.name.clone()))
         .collect();
-    let target = settings
+    let (target_index, target) = settings
         .pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
-    // Second phase: stream through entries until we reach the target,
-    // buffer it, then stop.
+    // Second phase: open only the block ("folder") that holds the
+    // target. Entries sharing a block come out of one decompression
+    // stream in order, and sevenz-rust does not skip the ones the
+    // callback leaves unread, so everything in front of the target has
+    // to be drained or the target's reader starts at the wrong offset.
+    let folder_index = archive
+        .stream_map
+        .file_folder_index
+        .get(target_index)
+        .copied()
+        .flatten()
+        .ok_or("7z entry has no data stream")?;
+    let mut file_index = archive.stream_map.folder_first_file_index[folder_index];
+    let mut skipped: u64 = 0;
     let mut captured: Option<Vec<u8>> = None;
-    sz.for_each_entries(|entry, r| {
-        if entry.name == target {
-            let mut buf = Vec::with_capacity(entry.size as usize);
-            r.read_to_end(&mut buf)?;
-            captured = Some(buf);
-            Ok(false) // stop iteration
-        } else {
-            Ok(true) // skip (sevenz-rust drains internally)
-        }
-    })?;
+    BlockDecoder::new(folder_index, &archive, &[], &mut reader).for_each_entries(
+        &mut |entry, r| {
+            let current = file_index;
+            file_index += 1;
+            if current == target_index {
+                captured = Some(limits::read_capped(r, entry.size, limits::MAX_ENTRY_SIZE)?);
+                return Ok(false); // stop iteration
+            }
+            skipped = skipped.saturating_add(entry.size);
+            if skipped > limits::MAX_SOLID_SKIP {
+                return Err(sevenz_rust::Error::other(
+                    "too much data ahead of the image in a solid 7z block",
+                ));
+            }
+            std::io::copy(r, &mut std::io::sink())?;
+            Ok(true)
+        },
+    )?;
 
     let data = captured.ok_or("7z entry found in metadata but not in stream")?;
     Ok((target, data))
+}
+
+/// Reject a signature header whose "next header" lies outside the file
+/// or is implausibly large. `Archive::read` allocates the declared size
+/// before reading it, so this has to happen first.
+fn check_start_header<R: Read>(reader: &mut R, file_size: u64) -> Result<(), Box<dyn Error>> {
+    const SIGNATURE_HEADER_SIZE: u64 = 32;
+
+    let mut head = [0u8; SIGNATURE_HEADER_SIZE as usize];
+    reader.read_exact(&mut head)?;
+    let offset = u64::from_le_bytes(head[12..20].try_into().unwrap());
+    let header_size = u64::from_le_bytes(head[20..28].try_into().unwrap());
+
+    if header_size > limits::MAX_SEVENZ_HEADER_SIZE {
+        return Err(format!("7z header too large ({header_size} bytes)").into());
+    }
+    let end = SIGNATURE_HEADER_SIZE
+        .checked_add(offset)
+        .and_then(|n| n.checked_add(header_size));
+    if end.is_none_or(|end| end > file_size) {
+        return Err("7z header lies outside the file".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -120,6 +167,80 @@ mod tests {
         let sz = build_7z(&[("aaa.jpg", &png), ("cover.jpg", &png), ("zzz.jpg", &png)]);
         let (name, _) = read_first_image(sz, &Settings::default()).expect("7z read_first_image");
         assert_eq!(name, "cover.jpg");
+    }
+
+    /// Like `build_7z`, but packs every entry into one solid block, the
+    /// way 7-Zip does by default.
+    fn build_solid_7z(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
+        use sevenz_rust::{SevenZArchiveEntry, SevenZWriter, SourceReader};
+        let mut buf = Vec::new();
+        {
+            let mut sz = SevenZWriter::new(Cursor::new(&mut buf)).unwrap();
+            let headers = entries
+                .iter()
+                .map(|(name, _)| {
+                    let mut entry = SevenZArchiveEntry::new();
+                    entry.name = (*name).to_string();
+                    entry.has_stream = true;
+                    entry
+                })
+                .collect();
+            let bodies: Vec<SourceReader<Cursor<&[u8]>>> = entries
+                .iter()
+                .map(|(_, body)| SourceReader::new(Cursor::new(*body)))
+                .collect();
+            sz.push_archive_entries(headers, bodies.into()).unwrap();
+            sz.finish().unwrap();
+        }
+        Cursor::new(buf)
+    }
+
+    #[test]
+    fn sevenz_solid_block_returns_the_target_not_the_first_entry() {
+        let sz = build_solid_7z(&[
+            ("notes.txt", b"not an image, sits first in the block"),
+            ("page2.png", b"bytes of page two"),
+            ("page1.png", b"bytes of page one"),
+            ("cover.png", b"bytes of the cover"),
+        ]);
+        let (name, bytes) =
+            read_first_image(sz, &Settings::default()).expect("solid 7z read_first_image");
+        assert_eq!(name, "cover.png");
+        assert_eq!(bytes, b"bytes of the cover");
+    }
+
+    #[test]
+    fn sevenz_duplicate_names_extract_the_picked_entry() {
+        // The first `a.png` is over the per-entry cap only in spirit: we
+        // can't afford a 500 MiB fixture, so check the index match by
+        // content instead. Natural sort is stable, so the first one wins.
+        let sz = build_solid_7z(&[("a.png", b"first"), ("a.png", b"second")]);
+        let (_, bytes) = read_first_image(sz, &Settings::default()).expect("7z read_first_image");
+        assert_eq!(bytes, b"first");
+    }
+
+    #[test]
+    fn sevenz_oversized_header_claim_is_rejected() {
+        // Signature header only, declaring a 100 GiB metadata header.
+        let mut head = Vec::new();
+        head.extend_from_slice(b"7z\xBC\xAF\x27\x1C\x00\x04");
+        head.extend_from_slice(&[0u8; 4]); // start header CRC
+        head.extend_from_slice(&0u64.to_le_bytes()); // next header offset
+        head.extend_from_slice(&(100u64 << 30).to_le_bytes()); // next header size
+        head.extend_from_slice(&[0u8; 4]); // next header CRC
+        assert_eq!(head.len(), 32);
+        assert!(read_first_image(Cursor::new(head), &Settings::default()).is_err());
+    }
+
+    #[test]
+    fn sevenz_header_past_end_of_file_is_rejected() {
+        let mut head = Vec::new();
+        head.extend_from_slice(b"7z\xBC\xAF\x27\x1C\x00\x04");
+        head.extend_from_slice(&[0u8; 4]);
+        head.extend_from_slice(&0u64.to_le_bytes());
+        head.extend_from_slice(&(1u64 << 20).to_le_bytes()); // 1 MiB, file has 32 bytes
+        head.extend_from_slice(&[0u8; 4]);
+        assert!(read_first_image(Cursor::new(head), &Settings::default()).is_err());
     }
 
     #[test]
