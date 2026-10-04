@@ -105,7 +105,7 @@ fn try_decode_jpeg_scaled(
         return Ok(None);
     }
     use image::{ImageBuffer, Luma, Rgb};
-    use jpeg_decoder::{Decoder, PixelFormat};
+    use jpeg_decoder::{CodingProcess, Decoder, PixelFormat};
 
     let mut decoder = Decoder::new(Cursor::new(bytes));
     decoder.read_info()?;
@@ -146,6 +146,26 @@ fn try_decode_jpeg_scaled(
         return Err(
             format!("JPEG decoded buffer would exceed allocation limit: {pixel_bytes}").into(),
         );
+    }
+
+    // Progressive frames are the exception to "scaling shrinks the
+    // cost": jpeg-decoder keeps every DCT coefficient of the unscaled
+    // image (one i16 per sample) and allocates that as soon as it sees
+    // the first scan header. Hand those to the `image` crate, which
+    // enforces `MAX_IMAGE_ALLOC` on its own allocations.
+    if info.coding_process == CodingProcess::DctProgressive {
+        let components = match info.pixel_format {
+            PixelFormat::L8 | PixelFormat::L16 => 1u64,
+            PixelFormat::RGB24 => 3,
+            PixelFormat::CMYK32 => 4,
+        };
+        let coefficient_bytes = (src_w as u64)
+            .saturating_mul(src_h as u64)
+            .saturating_mul(components)
+            .saturating_mul(2);
+        if coefficient_bytes > limits::MAX_IMAGE_ALLOC {
+            return Ok(None);
+        }
     }
 
     let pixels = decoder.decode()?;
