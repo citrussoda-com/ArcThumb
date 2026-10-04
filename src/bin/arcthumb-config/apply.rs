@@ -38,12 +38,14 @@ pub enum ApplyAction {
     /// first when present, so a registry-write failure aborts before
     /// shell registrations are touched.
     SaveSettings(Settings),
-    /// Bind the thumbnail provider to one extension.
+    /// Enable one extension: bind the thumbnail provider, and the
+    /// preview handler too while the preview pane is switched on.
     RegisterExtension(&'static str),
-    /// Unbind the thumbnail provider from one extension.
+    /// Disable one extension: unbind both handlers from it.
     UnregisterExtension(&'static str),
     /// Register the preview-handler CLSID and bind it to every
-    /// supported extension.
+    /// enabled extension. Emitted after the extension actions, so
+    /// "enabled" already reflects this Apply.
     EnablePreview,
     /// Unbind the preview handler everywhere and remove its CLSID.
     DisablePreview,
@@ -202,19 +204,30 @@ impl RegistryOps for RealRegistryOps {
         settings.save_to_registry()
     }
 
+    // An extension's checkbox covers both handlers: the preview pane
+    // follows the thumbnail binding, so unticking `.zip` hands `.zip`
+    // back completely instead of leaving ArcThumb in the preview pane.
+
     fn register_extension(&self, ext: &'static str) -> std::io::Result<()> {
-        registry::register_extension(self.scope, ext)
+        registry::register_extension(self.scope, ext)?;
+        if registry::is_preview_enabled(self.scope) {
+            registry::register_preview_extension(self.scope, ext)?;
+        }
+        Ok(())
     }
 
     fn unregister_extension(&self, ext: &'static str) -> std::io::Result<()> {
-        registry::unregister_extension(self.scope, ext)
+        registry::unregister_extension(self.scope, ext)?;
+        registry::unregister_preview_extension(self.scope, ext)
     }
 
     fn enable_preview(&self) -> std::io::Result<()> {
         let dll = dll_path::resolve_dll_path().map_err(std::io::Error::other)?;
         registry::register_preview_clsid(self.scope, &dll)?;
         for ext in registry::EXTENSIONS {
-            registry::register_preview_extension(self.scope, ext)?;
+            if registry::is_extension_registered(self.scope, ext) {
+                registry::register_preview_extension(self.scope, ext)?;
+            }
         }
         Ok(())
     }

@@ -199,7 +199,8 @@ pub fn run_install_in(ops: &dyn CliOps, scope: Scope) -> i32 {
         .copied()
         .filter(|&ext| !upgrade || ops.is_extension_registered(scope, ext) || !was_known(ext))
         .collect();
-    // The preview pane is one switch for every extension.
+    // The preview pane is one switch, and it covers the enabled
+    // extensions only.
     let preview = !upgrade || ops.is_preview_enabled(scope);
 
     // Both COM classes (thumbnail provider + preview handler) are
@@ -213,7 +214,13 @@ pub fn run_install_in(ops: &dyn CliOps, scope: Scope) -> i32 {
         return EXIT_CLSID_FAILED;
     }
     for &ext in registry::EXTENSIONS {
-        if thumbnail_exts.contains(&ext) && ops.register_extension(scope, ext).is_err() {
+        if !thumbnail_exts.contains(&ext) {
+            // Builds before this one left the preview handler bound to
+            // a switched-off extension. Best effort, like uninstall.
+            let _ = ops.unregister_preview_extension(scope, ext);
+            continue;
+        }
+        if ops.register_extension(scope, ext).is_err() {
             return EXIT_EXTENSION_FAILED;
         }
         if preview && ops.register_preview_extension(scope, ext).is_err() {
@@ -541,8 +548,13 @@ mod tests {
         }
         // The DLL path may have moved, so the CLSID is always rewritten.
         assert!(calls.contains(&"register_clsid:user".to_string()));
-        // Preview is one switch for every extension, `.zip` included.
-        assert!(calls.contains(&"register_preview_extension:user:.zip".to_string()));
+        // A switched-off extension loses the preview handler as well,
+        // including a binding left behind by an older build.
+        assert!(!calls.contains(&"register_preview_extension:user:.zip".to_string()));
+        assert!(calls.contains(&"unregister_preview_extension:user:.zip".to_string()));
+        for &ext in &bound {
+            assert!(calls.contains(&format!("register_preview_extension:user:{ext}")));
+        }
         assert!(*ops.notify_called.borrow());
     }
 
