@@ -68,7 +68,7 @@ Open **ArcThumb Configuration** from the Start menu.
 - **Enable preview pane** is a single switch that registers or unregisters the `IPreviewHandler` for every supported extension at once.
 - **Mark archives with a coloured border** draws a frame around the thumbnail, coloured by format family (one colour for compressed archives, another for ebooks). It makes an archive cover easy to tell apart from a plain image.
 - **Mark archives with a format label** bakes a small `CBZ` / `EPUB` / … tag into the bottom-right corner. The label uses the file's extension when ArcThumb can read it and otherwise falls back to the detected format, so a `.cbz` reads "CBZ" but a renamed archive still gets a sensible tag. The label is dropped on very small icons where it would be unreadable; the border stays.
-- **Language** is English or Japanese. The first run picks one based on `GetUserDefaultLocaleName`; afterwards it lives in `HKCU\Software\ArcThumb\Language`.
+- **Language** is Automatic, English or Japanese. Automatic follows the Windows display language. Picking one stores it in `HKCU\Software\ArcThumb\Language`, and the change shows up the next time the window is opened.
 
 Both overlay options are off by default. The plain cover thumbnails shown at the top of this page are what you get out of the box; turning the overlay on changes how every archive thumbnail looks:
 

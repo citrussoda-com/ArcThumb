@@ -23,7 +23,7 @@ use crate::cli;
 use crate::dialogs;
 use crate::elevate::{self, Elevated};
 use crate::extension_model::ExtensionModel;
-use crate::locale::{self, Strings};
+use crate::locale::{self, LanguageChoice, Strings};
 use crate::message_box;
 use crate::state::{self, EXT_COUNT, UiModel};
 use crate::update;
@@ -60,6 +60,9 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // one-way binding would have been severed by the reset's assignment.
     slint::platform::update_timers_and_animations();
     push_model(&window, &initial_model);
+    // Same ordering constraint as push_model: the language dropdown is
+    // a ComboBox whose model was just localized.
+    window.set_language_index(locale::language_override().to_index());
     let state = Rc::new(RefCell::new(initial_model));
 
     // OK
@@ -210,7 +213,6 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_tab_files(SharedString::from(s.tab_files));
     window.set_tab_thumbnail(SharedString::from(s.tab_thumbnail));
     window.set_tab_display(SharedString::from(s.tab_display));
-    window.set_tab_preview(SharedString::from(s.tab_preview));
     window.set_group_extensions(SharedString::from(s.group_extensions));
     window.set_group_image_exts(SharedString::from(s.group_image_exts));
     window.set_group_sort(SharedString::from(s.group_sort));
@@ -222,6 +224,10 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_cover_ignore_label(SharedString::from(s.cover_ignore));
     window.set_group_overlay(SharedString::from(s.group_overlay));
     window.set_regen_hint(SharedString::from(s.regen_hint));
+    window.set_group_preview(SharedString::from(s.group_preview));
+    window.set_group_language(SharedString::from(s.group_language));
+    window.set_language_auto_label(SharedString::from(s.language_auto));
+    window.set_language_hint(SharedString::from(s.language_hint));
     window.set_enable_preview_label(SharedString::from(s.cb_enable_preview));
     window.set_overlay_border_label(SharedString::from(s.cb_overlay_border));
     window.set_overlay_label_label(SharedString::from(s.cb_overlay_label));
@@ -332,12 +338,27 @@ fn apply_changes(
         );
     }
 
+    // The UI language is a preference of this tool, not part of the
+    // thumbnail settings or the shell registration, so it stays out of
+    // the apply plan. It takes effect on the next launch.
+    let language = LanguageChoice::from_index(window.get_language_index());
+    let mut language_ok = true;
+    if language != locale::language_override()
+        && let Err(e) = locale::set_language_override(language)
+    {
+        language_ok = false;
+        message_box::error(
+            strings.error_title,
+            &format!("{}\n\n{e}", strings.error_save),
+        );
+    }
+
     let reloaded = UiModel::load();
     push_model(window, &reloaded);
     lists.refresh_from(&reloaded);
     *state.borrow_mut() = reloaded;
 
-    outcome.is_ok() && elevated_ok
+    outcome.is_ok() && elevated_ok && language_ok
 }
 
 /// Hand the registration changes to an elevated copy of this exe and
@@ -622,7 +643,10 @@ mod tests {
             assert_eq!(window.get_tab_files(), locale::EN.tab_files);
             assert_eq!(window.get_tab_thumbnail(), locale::EN.tab_thumbnail);
             assert_eq!(window.get_tab_display(), locale::EN.tab_display);
-            assert_eq!(window.get_tab_preview(), locale::EN.tab_preview);
+            assert_eq!(window.get_group_preview(), locale::EN.group_preview);
+            assert_eq!(window.get_group_language(), locale::EN.group_language);
+            assert_eq!(window.get_language_auto_label(), locale::EN.language_auto);
+            assert_eq!(window.get_language_hint(), locale::EN.language_hint);
             assert_eq!(window.get_group_overlay(), locale::EN.group_overlay);
             assert_eq!(window.get_regen_hint(), locale::EN.regen_hint);
             assert_eq!(

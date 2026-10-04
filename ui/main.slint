@@ -50,9 +50,10 @@ component TabPage inherits ScrollView {
     }
 }
 
-// Note under settings whose effect is baked into cached thumbnails.
-// With tabs the Regenerate button is no longer next to them, so the
-// connection has to be spelled out where the setting is.
+// Dimmed note under a setting that does not take effect right away.
+// Mostly used for settings whose effect is baked into cached
+// thumbnails: with tabs the Regenerate button is no longer next to
+// them, so the connection has to be spelled out where the setting is.
 component RegenHint inherits Text {
     vertical-stretch: 0;
     wrap: word-wrap;
@@ -63,9 +64,9 @@ export component MainWindow inherits Window {
     title: root.window_title;
     icon: @image-url("../assets/icon.png");
     preferred-width: 520px;
-    // Sized for the tallest tab (Files). The TabWidget gives every tab
-    // the same area, so switching tabs never resizes the window.
-    preferred-height: 400px;
+    // Sized for the tallest tab (Display). The TabWidget gives every
+    // tab the same area, so switching tabs never resizes the window.
+    preferred-height: 460px;
     min-width: 500px;
     min-height: 300px;
 
@@ -80,7 +81,6 @@ export component MainWindow inherits Window {
     in property <string> tab_files;
     in property <string> tab_thumbnail;
     in property <string> tab_display;
-    in property <string> tab_preview;
     in property <string> group_extensions;
     in property <string> group_image_exts;
     in property <string> group_sort;
@@ -92,7 +92,11 @@ export component MainWindow inherits Window {
     in property <string> cover_ignore_label;
     in property <string> group_overlay;
     in property <string> regen_hint;
+    in property <string> group_preview;
     in property <string> enable_preview_label;
+    in property <string> group_language;
+    in property <string> language_auto_label;
+    in property <string> language_hint;
     in property <string> overlay_border_label;
     in property <string> overlay_label_label;
     in property <string> btn_ok;
@@ -119,6 +123,10 @@ export component MainWindow inherits Window {
     in-out property <bool> enable_preview;
     in-out property <bool> overlay_border;
     in-out property <bool> overlay_label;
+    // UI language, as an index into the dropdown: 0 = follow Windows,
+    // 1 = English, 2 = Japanese. Mapped to `locale::LanguageChoice` on
+    // the Rust side.
+    in-out property <int> language_index;
 
     // ---- Callbacks ----------------------------------------------
     callback ok_clicked();
@@ -288,16 +296,34 @@ export component MainWindow inherits Window {
                     }
 
                     RegenHint { text: root.regen_hint; }
-                }
-            }
 
-            Tab {
-                title: root.tab_preview;
-                TabPage {
-                    CheckBox {
+                    GroupBox {
                         vertical-stretch: 0;
-                        text: root.enable_preview_label;
-                        checked <=> root.enable_preview;
+                        title: root.group_preview;
+                        CheckBox {
+                            vertical-stretch: 0;
+                            text: root.enable_preview_label;
+                            checked <=> root.enable_preview;
+                        }
+                    }
+
+                    GroupBox {
+                        vertical-stretch: 0;
+                        title: root.group_language;
+                        VerticalLayout {
+                            spacing: 6px;
+                            ComboBox {
+                                vertical-stretch: 0;
+                                // The two language names are shown in
+                                // their own language on purpose, so they
+                                // can be found from either UI.
+                                model: [root.language_auto_label, "English", "日本語"];
+                                // Two-way (`<=>`) is required — see the sort
+                                // ComboBox for why a one-way binding breaks.
+                                current-index <=> root.language_index;
+                            }
+                            RegenHint { text: root.language_hint; }
+                        }
                     }
                 }
             }
@@ -490,7 +516,6 @@ export component MainWindowPreview inherits MainWindow {
     tab_files: "対象ファイル";
     tab_thumbnail: "サムネイル";
     tab_display: "表示";
-    tab_preview: "プレビュー";
     group_extensions: "有効にする拡張子";
     group_image_exts: "サムネイルに使う画像形式 (アーカイブ内)";
     group_sort: "並び順";
@@ -502,7 +527,11 @@ export component MainWindowPreview inherits MainWindow {
     cover_ignore_label: "常に先頭ページを使う";
     group_overlay: "識別オーバーレイ";
     regen_hint: "作成済みのサムネイルに反映するには「サムネイルを再生成」を実行してください。";
+    group_preview: "プレビュー ウィンドウ";
     enable_preview_label: "プレビュー ウィンドウを有効にする (Alt+P)";
+    group_language: "言語";
+    language_auto_label: "自動 (Windows に合わせる)";
+    language_hint: "言語の変更は、この設定画面を次に開いたときに反映されます。";
     overlay_border_label: "アーカイブを色付きの枠線で示す";
     overlay_label_label: "アーカイブにフォーマットラベルを表示 (CBZ, EPUB, ...)";
     btn_ok: "OK";
