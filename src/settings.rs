@@ -250,6 +250,7 @@ impl Settings {
     /// `None`, which the archive backends turn into a "no image" error
     /// and ultimately a default Explorer icon.
     pub fn pick_first_image<T: ImageCandidate>(&self, mut items: Vec<T>) -> Option<T> {
+        items.retain(|t| !is_junk_entry(t.name()));
         if items.is_empty() {
             return None;
         }
@@ -349,6 +350,17 @@ fn is_cover_name(path: &str) -> bool {
         stem.to_ascii_lowercase().as_str(),
         "cover" | "folder" | "thumb" | "thumbnail" | "front"
     )
+}
+
+/// Is this entry macOS metadata rather than a real image? Archives
+/// made with Finder carry an AppleDouble sidecar for every file
+/// (`__MACOSX/dir/._001.jpg`). It has the image's extension but holds
+/// a resource fork, and `_` sorts ahead of letters, so without this it
+/// would be picked first and then fail to decode.
+fn is_junk_entry(path: &str) -> bool {
+    let mut components = path.rsplit(['/', '\\']);
+    let basename = components.next().unwrap_or(path);
+    basename.starts_with("._") || components.any(|dir| dir == "__MACOSX")
 }
 
 /// Natural sort comparator: runs of ASCII digits compared as
@@ -522,6 +534,33 @@ mod tests {
         assert_eq!(
             Settings::default().pick_first_image(Vec::<String>::new()),
             None
+        );
+    }
+
+    #[test]
+    fn pick_first_image_skips_macos_metadata() {
+        let s = Settings::default();
+        let picked = s.pick_first_image(vec![
+            "__MACOSX/MyComic/._001.jpg".to_string(),
+            "MyComic/._cover.jpg".to_string(),
+            "MyComic/002.jpg".to_string(),
+            "MyComic/001.jpg".to_string(),
+        ]);
+        assert_eq!(picked, Some("MyComic/001.jpg".to_string()));
+
+        // Backslash separators, as written by some Windows tools.
+        let picked = s.pick_first_image(vec!["__MACOSX\\._a.png".to_string(), "b.png".to_string()]);
+        assert_eq!(picked, Some("b.png".to_string()));
+
+        // Nothing but metadata means no image at all.
+        assert_eq!(
+            s.pick_first_image(vec!["__MACOSX/._001.jpg".to_string()]),
+            None
+        );
+        // A name that merely starts with an underscore is a real file.
+        assert_eq!(
+            s.pick_first_image(vec!["_001.jpg".to_string()]),
+            Some("_001.jpg".to_string())
         );
     }
 
