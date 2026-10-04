@@ -133,10 +133,13 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // self-manages: do NOT use `Timer::default().start(...)` here,
     // because that returns an owned `Timer` whose `Drop` cancels the
     // timer immediately when the value goes out of scope.
-    if let Some(ver) = update::should_show_donation() {
+    let donation_version = update::should_show_donation();
+    // Recorded on every launch, prompt or not: the next launch compares
+    // against it to tell whether the binary was updated in between.
+    update::record_run_version();
+    if let Some(ver) = donation_version {
         Timer::single_shot(Duration::ZERO, move || {
             dialogs::show_donation_dialog(&ver, strings);
-            update::record_donation_shown();
         });
     }
 
