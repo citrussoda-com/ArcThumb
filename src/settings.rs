@@ -402,7 +402,15 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
         }
     }
-    ab.len().cmp(&bb.len())
+    // At least one side is used up. Whichever still has characters left
+    // sorts after. The unconsumed lengths are what matter here, not the
+    // totals: leading zeros make the consumed parts differ in length
+    // ("a01" against "a1b"), and comparing totals called those two
+    // equal. Total length only breaks ties between names that differ in
+    // nothing but leading zeros, to keep the order deterministic.
+    (ab.len() - i)
+        .cmp(&(bb.len() - j))
+        .then(ab.len().cmp(&bb.len()))
 }
 
 fn strip_leading_zeros(s: &[u8]) -> &[u8] {
@@ -462,6 +470,20 @@ mod tests {
     #[test]
     fn natural_sort_equal_strings() {
         assert_eq!(natural_cmp("page01.jpg", "page01.jpg"), Ordering::Equal);
+    }
+
+    #[test]
+    fn natural_sort_leading_zeros_do_not_hide_a_longer_tail() {
+        // Same total length, but "a1b" has a character left after the
+        // number and "a01" does not.
+        assert_eq!(natural_cmp("a01", "a1b"), Ordering::Less);
+        assert_eq!(natural_cmp("a1b", "a01"), Ordering::Greater);
+        // The order has to be consistent across a third name.
+        assert_eq!(natural_cmp("a01", "a1a"), Ordering::Less);
+        assert_eq!(natural_cmp("a1a", "a1b"), Ordering::Less);
+        // Names equal up to leading zeros still get a stable order.
+        assert_eq!(natural_cmp("a1", "a01"), Ordering::Less);
+        assert_eq!(natural_cmp("a01", "a1"), Ordering::Greater);
     }
 
     #[test]
