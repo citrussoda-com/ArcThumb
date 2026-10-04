@@ -26,7 +26,7 @@ pub fn resolve_dll_path() -> Result<PathBuf, String> {
 /// `arcthumb.dll` placed next to the current executable. Returns
 /// the candidate path even if the file does not actually exist —
 /// the existence check is the caller's job.
-fn exe_neighbour_dll() -> Option<PathBuf> {
+pub fn exe_neighbour_dll() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     Some(dir.join("arcthumb.dll"))

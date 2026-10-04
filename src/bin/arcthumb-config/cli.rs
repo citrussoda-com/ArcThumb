@@ -12,6 +12,8 @@
 //! - `3` CLSID registration failed
 //! - `4` extension binding failed
 //! - `6` some registry entries could not be removed (`--uninstall` only)
+//! - `7` a registration change failed (`--apply-shell` only)
+//! - `8` unrecognised arguments
 //!
 //! (Exit code `5` — GUI init failure — lives in `main.rs`; it is not
 //! part of the CLI drivers.)
@@ -21,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use arcthumb::registry::{self, Scope};
 
+use crate::apply::{self, RealRegistryOps};
 use crate::dll_path;
 
 pub const EXIT_OK: i32 = 0;
@@ -28,6 +31,57 @@ pub const EXIT_DLL_NOT_FOUND: i32 = 2;
 pub const EXIT_CLSID_FAILED: i32 = 3;
 pub const EXIT_EXTENSION_FAILED: i32 = 4;
 pub const EXIT_UNINSTALL_INCOMPLETE: i32 = 6;
+pub const EXIT_APPLY_FAILED: i32 = 7;
+pub const EXIT_USAGE: i32 = 8;
+
+/// Flag that starts the elevated copy the GUI uses to change a
+/// per-machine registration. See [`run_apply_shell`].
+pub const APPLY_SHELL_FLAG: &str = "--apply-shell";
+
+/// Command-line spelling of a [`Scope`], shared by `--install --scope`
+/// and `--apply-shell`.
+pub fn scope_arg(scope: Scope) -> &'static str {
+    match scope {
+        Scope::PerUser => "user",
+        Scope::PerMachine => "machine",
+    }
+}
+
+pub fn parse_scope(arg: &str) -> Option<Scope> {
+    match arg {
+        "user" => Some(Scope::PerUser),
+        "machine" => Some(Scope::PerMachine),
+        _ => None,
+    }
+}
+
+/// Parse what follows `--install`: nothing, or `--scope user|machine`.
+/// `Ok(None)` means "pick the hive from this process's elevation".
+pub fn parse_install_args(args: &[String]) -> Result<Option<Scope>, ()> {
+    match args {
+        [] => Ok(None),
+        [flag, value] if flag == "--scope" => parse_scope(value).map(Some).ok_or(()),
+        _ => Err(()),
+    }
+}
+
+/// `--apply-shell <user|machine> <tokens…>`: perform the registration
+/// changes the GUI could not write itself. The tokens are the ones
+/// produced by [`apply::shell_actions_to_args`].
+pub fn run_apply_shell(args: &[String]) -> i32 {
+    let Some((scope, tokens)) = args.split_first() else {
+        return EXIT_USAGE;
+    };
+    let (Some(scope), Some(plan)) = (parse_scope(scope), apply::shell_actions_from_args(tokens))
+    else {
+        return EXIT_USAGE;
+    };
+    if apply::apply_plan(&plan, &RealRegistryOps::new(scope)).is_ok() {
+        EXIT_OK
+    } else {
+        EXIT_APPLY_FAILED
+    }
+}
 
 /// The side effects the CLI drivers need. Production uses
 /// [`RealCliOps`]; tests inject a recording mock.
@@ -105,16 +159,28 @@ impl CliOps for RealCliOps {
 
 /// `--install`: write the full shell-extension registration.
 ///
-/// Hive is picked by elevation: HKLM when the process is elevated
-/// (admin Inno install mode), HKCU otherwise. This is what makes the
-/// shell extension load under High-Integrity Explorer in Windows
-/// Sandbox and enterprise lockdowns where HKCU CLSIDs are ignored.
+/// With no `--scope`, the hive is picked by elevation: HKLM when the
+/// process is elevated, HKCU otherwise. The installer passes the scope
+/// explicitly instead (see [`run_install_in`]).
 pub fn run_install(ops: &dyn CliOps) -> i32 {
+    run_install_in(ops, ops.current_scope())
+}
+
+/// `--install --scope <user|machine>`: register into the given hive.
+///
+/// The installer knows which mode the user chose and says so, because
+/// elevation alone gets it wrong: setup started with "Run as
+/// administrator" can still be told to install for the current user
+/// only, and the files then land in the user profile while an
+/// elevation-based guess would register them machine-wide. A
+/// per-machine registration is what makes the shell extension load
+/// under High-Integrity Explorer in Windows Sandbox and enterprise
+/// lockdowns where HKCU CLSIDs are ignored.
+pub fn run_install_in(ops: &dyn CliOps, scope: Scope) -> i32 {
     let dll_path = match ops.resolve_dll_path() {
         Ok(p) => p,
         Err(_) => return EXIT_DLL_NOT_FOUND,
     };
-    let scope = ops.current_scope();
 
     // The installer runs `--install` on upgrades too. Read what the
     // user had before writing anything, so an extension or the preview
@@ -363,6 +429,48 @@ mod tests {
             ops.calls.borrow().iter().all(|c| c.contains(":machine")),
             "every registration must hit the elevated hive"
         );
+    }
+
+    #[test]
+    fn install_with_an_explicit_scope_ignores_elevation() {
+        // Elevated setup, "install for me only".
+        let ops = MockCliOps::new().with_scope(Scope::PerMachine);
+        assert_eq!(run_install_in(&ops, Scope::PerUser), EXIT_OK);
+        assert!(ops.calls.borrow().iter().all(|c| c.contains(":user")));
+    }
+
+    #[test]
+    fn install_args_accept_only_an_optional_scope() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_install_args(&args(&[])), Ok(None));
+        assert_eq!(
+            parse_install_args(&args(&["--scope", "user"])),
+            Ok(Some(Scope::PerUser))
+        );
+        assert_eq!(
+            parse_install_args(&args(&["--scope", "machine"])),
+            Ok(Some(Scope::PerMachine))
+        );
+        assert!(parse_install_args(&args(&["--scope"])).is_err());
+        assert!(parse_install_args(&args(&["--scope", "all"])).is_err());
+        assert!(parse_install_args(&args(&["--scope", "user", "x"])).is_err());
+        assert!(parse_install_args(&args(&["user"])).is_err());
+    }
+
+    #[test]
+    fn scope_args_round_trip() {
+        for scope in [Scope::PerUser, Scope::PerMachine] {
+            assert_eq!(parse_scope(scope_arg(scope)), Some(scope));
+        }
+    }
+
+    #[test]
+    fn apply_shell_rejects_bad_arguments_before_touching_anything() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_apply_shell(&args(&[])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["everyone", "+.zip"])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["user", "+.exe"])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["user", "zip"])), EXIT_USAGE);
     }
 
     #[test]

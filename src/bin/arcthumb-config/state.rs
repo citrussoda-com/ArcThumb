@@ -2,9 +2,13 @@
 //! the registry at startup and after every Apply so the UI stays
 //! in sync with the actual registry state.
 
+use std::path::Path;
+
 use arcthumb::elevation;
 use arcthumb::registry::{self, Scope};
 use arcthumb::settings::{CoverMode, SUPPORTED_IMAGE_EXTS, Settings};
+
+use crate::dll_path;
 
 /// Number of extensions ArcThumb can manage. Derived directly from
 /// `registry::EXTENSIONS` so the two can't drift apart.
@@ -18,8 +22,8 @@ pub const EXT_COUNT: usize = registry::EXTENSIONS.len();
 pub struct UiModel {
     pub settings: Settings,
     /// Which hive the GUI is currently editing. Picked from the live
-    /// install at load time (HKLM wins when both are present), or from
-    /// the current process's elevation when nothing is yet installed.
+    /// install at load time (see [`detect_scope`]), or from the
+    /// current process's elevation when nothing is yet installed.
     /// All Apply mutations target this scope so we don't shadow a
     /// machine install with a user install.
     pub scope: Scope,
@@ -42,10 +46,7 @@ pub struct UiModel {
 impl UiModel {
     pub fn load() -> Self {
         let settings = Settings::load_from_registry_uncached();
-        // Prefer whichever hive the shell extension currently lives in;
-        // fall back to the current process's elevation when nothing is
-        // installed yet (rare — the installer always registers first).
-        let scope = registry::detect_installed_scope().unwrap_or_else(elevation::current_scope);
+        let scope = detect_scope();
         let ext_enabled: [bool; EXT_COUNT] = std::array::from_fn(|i| {
             registry::is_extension_registered(scope, registry::EXTENSIONS[i])
         });
@@ -59,6 +60,32 @@ impl UiModel {
             preview_enabled,
         }
     }
+}
+
+/// Decide which hive this GUI edits.
+///
+/// The registration that belongs to this install is the one pointing
+/// at the DLL next to this exe. Both hives can hold one when a
+/// per-user and a per-machine install coexist, and each install's GUI
+/// should then edit its own. If both point here, HKCU goes first: that
+/// is the one a normal Explorer resolves. With no match, fall back to
+/// whichever hive has a registration at all, then to the current
+/// process's elevation when nothing is installed yet (rare — the
+/// installer always registers first).
+fn detect_scope() -> Scope {
+    if let Some(own) = dll_path::exe_neighbour_dll() {
+        for scope in [Scope::PerUser, Scope::PerMachine] {
+            if registry::read_registered_dll_path(&[scope]).is_some_and(|p| same_path(&p, &own)) {
+                return scope;
+            }
+        }
+    }
+    registry::detect_installed_scope().unwrap_or_else(elevation::current_scope)
+}
+
+/// Windows paths compare without regard to case.
+fn same_path(a: &Path, b: &Path) -> bool {
+    a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
 /// Expand a bitmask over `SUPPORTED_IMAGE_EXTS` to a `Vec<bool>` of
@@ -103,6 +130,19 @@ pub fn cover_mode_from_index(index: i32) -> CoverMode {
 mod tests {
     use super::*;
     use arcthumb::settings::default_enabled_image_exts_mask;
+
+    #[test]
+    fn same_path_ignores_ascii_case_only() {
+        let a = Path::new(r"C:\Program Files\ArcThumb\arcthumb.dll");
+        assert!(same_path(
+            a,
+            Path::new(r"c:\program files\arcthumb\ARCTHUMB.DLL")
+        ));
+        assert!(!same_path(
+            a,
+            Path::new(r"C:\Program Files\Other\arcthumb.dll")
+        ));
+    }
 
     #[test]
     fn mask_to_vec_length_matches_supported_exts() {

@@ -47,6 +47,7 @@ pub struct Strings {
     pub error_title: &'static str,
     pub error_save: &'static str,
     pub error_register: &'static str,
+    pub error_elevation_declined: &'static str,
     pub error_gui_init: &'static str,
     // Update check dialog
     pub update_title: &'static str,
@@ -108,6 +109,7 @@ pub const EN: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "Failed to save settings to the registry.",
     error_register: "Failed to update shell extension registration.",
+    error_elevation_declined: "ArcThumb is installed for all users, so changing the enabled extensions or the preview pane needs administrator rights.\n\nThose two settings were not changed.",
     error_gui_init: "Failed to initialize the configuration UI. The graphics backend could not start. This can happen on systems without GPU acceleration (for example Windows Sandbox).",
     update_title: "Update available",
     update_available: "A new version of ArcThumb is available: v{}  (current: v{})",
@@ -159,6 +161,7 @@ pub const JA: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "設定の保存に失敗しました。",
     error_register: "シェル拡張の登録状態の更新に失敗しました。",
+    error_elevation_declined: "ArcThumb はすべてのユーザー向けにインストールされているため、有効な拡張子とプレビューウィンドウの変更には管理者権限が必要です。\n\nこの 2 つの設定は変更されませんでした。",
     error_gui_init: "設定 UI の初期化に失敗しました。グラフィックスバックエンドを開始できませんでした。GPU アクセラレーションが利用できない環境 (Windows Sandbox など) で発生することがあります。",
     update_title: "アップデート通知",
     update_available: "ArcThumb の新しいバージョンがあります: v{}  (現在: v{})",

@@ -49,6 +49,64 @@ pub enum ApplyAction {
     DisablePreview,
 }
 
+impl ApplyAction {
+    /// `true` for the actions that write the shell registration, which
+    /// lives in the install's hive (HKLM for a per-machine install).
+    /// `SaveSettings` always goes to HKCU.
+    pub fn touches_shell(&self) -> bool {
+        !matches!(self, ApplyAction::SaveSettings(_))
+    }
+}
+
+/// Token for the preview-pane switch in [`shell_actions_to_args`].
+const PREVIEW_TOKEN: &str = "preview";
+
+/// Encode shell actions as command-line tokens for the elevated copy
+/// of this exe: `+.zip` / `-.zip` to bind or unbind an extension,
+/// `+preview` / `-preview` for the preview pane. `SaveSettings` has no
+/// token and is skipped.
+pub fn shell_actions_to_args(plan: &[ApplyAction]) -> Vec<String> {
+    plan.iter()
+        .filter_map(|action| match action {
+            ApplyAction::SaveSettings(_) => None,
+            ApplyAction::RegisterExtension(ext) => Some(format!("+{ext}")),
+            ApplyAction::UnregisterExtension(ext) => Some(format!("-{ext}")),
+            ApplyAction::EnablePreview => Some(format!("+{PREVIEW_TOKEN}")),
+            ApplyAction::DisablePreview => Some(format!("-{PREVIEW_TOKEN}")),
+        })
+        .collect()
+}
+
+/// Inverse of [`shell_actions_to_args`]. `None` if any token is
+/// malformed or names an extension ArcThumb does not handle, so the
+/// elevated copy never acts on an argument it does not fully
+/// understand.
+pub fn shell_actions_from_args(args: &[String]) -> Option<Vec<ApplyAction>> {
+    args.iter()
+        .map(|arg| {
+            let enable = match arg.chars().next()? {
+                '+' => true,
+                '-' => false,
+                _ => return None,
+            };
+            let name = &arg[1..];
+            if name == PREVIEW_TOKEN {
+                return Some(if enable {
+                    ApplyAction::EnablePreview
+                } else {
+                    ApplyAction::DisablePreview
+                });
+            }
+            let ext = registry::EXTENSIONS.iter().copied().find(|&e| e == name)?;
+            Some(if enable {
+                ApplyAction::RegisterExtension(ext)
+            } else {
+                ApplyAction::UnregisterExtension(ext)
+            })
+        })
+        .collect()
+}
+
 /// Compute the registry mutations needed to move from `old` to the
 /// desired UI state. Pure function — no I/O, no logging, safe to
 /// call from tests.
@@ -247,6 +305,66 @@ mod tests {
     use super::*;
     use arcthumb::settings::{CoverMode, SortOrder};
     use std::cell::RefCell;
+
+    #[test]
+    fn shell_actions_round_trip_through_args() {
+        let plan = vec![
+            ApplyAction::SaveSettings(Settings::default()),
+            ApplyAction::RegisterExtension(".zip"),
+            ApplyAction::UnregisterExtension(".azw3"),
+            ApplyAction::EnablePreview,
+            ApplyAction::DisablePreview,
+        ];
+        let args = shell_actions_to_args(&plan);
+        assert_eq!(args, ["+.zip", "-.azw3", "+preview", "-preview"]);
+        // Settings are saved by the GUI itself and never cross over.
+        assert_eq!(shell_actions_from_args(&args).unwrap(), plan[1..].to_vec());
+    }
+
+    #[test]
+    fn every_extension_round_trips_through_args() {
+        for &ext in registry::EXTENSIONS {
+            let plan = vec![
+                ApplyAction::RegisterExtension(ext),
+                ApplyAction::UnregisterExtension(ext),
+            ];
+            let args = shell_actions_to_args(&plan);
+            assert_eq!(shell_actions_from_args(&args).unwrap(), plan);
+        }
+    }
+
+    #[test]
+    fn shell_actions_from_args_rejects_anything_unexpected() {
+        for bad in [
+            "",
+            "+",
+            ".zip",
+            "+.exe",
+            "+zip",
+            "*preview",
+            "+preview ",
+            "+.ZIP",
+        ] {
+            assert!(
+                shell_actions_from_args(&[bad.to_string()]).is_none(),
+                "{bad:?} must be rejected"
+            );
+        }
+        // One bad token poisons the whole list.
+        let mixed = ["+.zip".to_string(), "+.exe".to_string()];
+        assert!(shell_actions_from_args(&mixed).is_none());
+        // No tokens is a valid, empty plan.
+        assert_eq!(shell_actions_from_args(&[]), Some(Vec::new()));
+    }
+
+    #[test]
+    fn only_save_settings_stays_out_of_the_shell() {
+        assert!(!ApplyAction::SaveSettings(Settings::default()).touches_shell());
+        assert!(ApplyAction::RegisterExtension(".zip").touches_shell());
+        assert!(ApplyAction::UnregisterExtension(".zip").touches_shell());
+        assert!(ApplyAction::EnablePreview.touches_shell());
+        assert!(ApplyAction::DisablePreview.touches_shell());
+    }
 
     fn baseline_model() -> UiModel {
         // Two extensions on, the rest off, natural sort, cover prio

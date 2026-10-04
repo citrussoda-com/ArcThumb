@@ -12,12 +12,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use arcthumb::elevation;
+use arcthumb::registry::Scope;
 use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings, SortOrder};
 use slint::{ComponentHandle, SharedString, Timer};
 
-use crate::apply::{self, RealRegistryOps};
+use crate::apply::{self, ApplyAction, RealRegistryOps};
 use crate::cache;
+use crate::cli;
 use crate::dialogs;
+use crate::elevate::{self, Elevated};
 use crate::extension_model::ExtensionModel;
 use crate::locale::{self, Strings};
 use crate::message_box;
@@ -278,7 +282,27 @@ fn apply_changes(
     );
     // Mutate whichever hive the loaded model came from, so an Apply
     // on a per-machine install doesn't silently bifurcate into HKCU.
-    let outcome = apply::apply_plan(&plan, &RealRegistryOps::new(state.borrow().scope));
+    let scope = state.borrow().scope;
+    let ops = RealRegistryOps::new(scope);
+    let (shell, local): (Vec<ApplyAction>, Vec<ApplyAction>) =
+        plan.into_iter().partition(ApplyAction::touches_shell);
+    // HKLM is read-only for this process unless it was started
+    // elevated. Settings live in HKCU and are saved here either way;
+    // the registration changes go to an elevated copy of the exe.
+    let needs_elevation =
+        scope == Scope::PerMachine && !shell.is_empty() && !elevation::is_elevated();
+    let mut elevated_ok = true;
+    let outcome = if needs_elevation {
+        let outcome = apply::apply_plan(&local, &ops);
+        if outcome.is_ok() {
+            elevated_ok = apply_shell_elevated(scope, &shell, strings);
+        }
+        outcome
+    } else {
+        let mut plan = local;
+        plan.extend(shell);
+        apply::apply_plan(&plan, &ops)
+    };
 
     if let Some(detail) = &outcome.settings_save_error {
         message_box::error(
@@ -308,7 +332,33 @@ fn apply_changes(
     lists.refresh_from(&reloaded);
     *state.borrow_mut() = reloaded;
 
-    outcome.is_ok()
+    outcome.is_ok() && elevated_ok
+}
+
+/// Hand the registration changes to an elevated copy of this exe and
+/// report the result to the user. Returns `true` when they were
+/// applied.
+fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], strings: &Strings) -> bool {
+    let mut args = vec![
+        cli::APPLY_SHELL_FLAG.to_string(),
+        cli::scope_arg(scope).to_string(),
+    ];
+    args.extend(apply::shell_actions_to_args(shell));
+
+    let detail = match elevate::run_self_elevated(&args) {
+        Ok(Elevated::Exited(0)) => return true,
+        Ok(Elevated::Declined) => {
+            message_box::error(strings.error_title, strings.error_elevation_declined);
+            return false;
+        }
+        Ok(Elevated::Exited(code)) => format!("exit code {code}"),
+        Err(e) => e.to_string(),
+    };
+    message_box::error(
+        strings.error_title,
+        &format!("{}\n\n{detail}", strings.error_register),
+    );
+    false
 }
 
 // =============================================================================
