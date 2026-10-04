@@ -494,6 +494,81 @@ mod tests {
     }
 
     #[test]
+    fn epub_cover_pointing_at_xhtml_falls_back_to_the_image_scan() {
+        // EPUB 2 books often name a wrapper page as the cover.
+        let png = make_tiny_png();
+        let opf = r#"<?xml version="1.0"?>
+<package version="2.0" xmlns="http://www.idpf.org/2007/opf">
+  <metadata><meta name="cover" content="cover"/></metadata>
+  <manifest>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="img" href="images/cover.jpg" media-type="image/jpeg"/>
+  </manifest>
+</package>"#;
+        let xhtml: &[u8] = b"\xEF\xBB\xBF<?xml version=\"1.0\"?>\n<html><body><img src=\"images/cover.jpg\"/></body></html>";
+        let epub = build_epub(
+            standard_container_xml(),
+            "OEBPS/content.opf",
+            opf,
+            &[
+                ("OEBPS/cover.xhtml", xhtml),
+                ("OEBPS/images/cover.jpg", &png),
+            ],
+        );
+        let (name, bytes) =
+            read_first_image(epub, &Settings::default()).expect("fallback to image scan");
+        assert_eq!(name, "OEBPS/images/cover.jpg");
+        assert_eq!(bytes, png);
+    }
+
+    #[test]
+    fn epub_cover_href_is_percent_decoded() {
+        let png = make_tiny_png();
+        // A decoy that sorts first, so a failed lookup that fell back
+        // to the generic scan would pick the wrong file.
+        let decoy = b"not the cover".to_vec();
+        let opf = r#"<?xml version="1.0"?>
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf">
+  <manifest>
+    <item id="c" href="Images/%E8%A1%A8%E7%B4%99%20art.png#top" properties="cover-image" media-type="image/png"/>
+  </manifest>
+</package>"#;
+        let epub = build_epub(
+            standard_container_xml(),
+            "OEBPS/content.opf",
+            opf,
+            &[
+                ("OEBPS/Images/000.png", &decoy),
+                ("OEBPS/Images/\u{8868}\u{7d19} art.png", &png),
+            ],
+        );
+        let (name, bytes) = read_first_image(epub, &Settings::default()).expect("epub cover");
+        assert_eq!(name, "OEBPS/Images/\u{8868}\u{7d19} art.png");
+        assert_eq!(bytes, png);
+    }
+
+    #[test]
+    fn epub_cover_href_with_a_literal_percent_still_resolves() {
+        let png = make_tiny_png();
+        let opf = r#"<?xml version="1.0"?>
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf">
+  <manifest>
+    <item id="c" href="100%20off.png" properties="cover-image" media-type="image/png"/>
+  </manifest>
+</package>"#;
+        // The entry is literally named with `%20` in it.
+        let epub = build_epub(
+            standard_container_xml(),
+            "OEBPS/content.opf",
+            opf,
+            &[("OEBPS/000.png", b"decoy"), ("OEBPS/100%20off.png", &png)],
+        );
+        let (name, bytes) = read_first_image(epub, &Settings::default()).expect("epub cover");
+        assert_eq!(name, "OEBPS/100%20off.png");
+        assert_eq!(bytes, png);
+    }
+
+    #[test]
     fn epub_fallback_when_no_metadata() {
         let png = make_tiny_png();
         let opf = r#"<package>
