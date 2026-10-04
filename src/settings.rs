@@ -13,6 +13,7 @@
 //!     DisabledImageExts REG_SZ    ".tiff,.tif" (comma-separated)
 //!     OverlayBorder     REG_DWORD 0 | 1
 //!     OverlayLabel      REG_DWORD 0 | 1
+//!     OverlayDisabledExts REG_SZ  ".mobi,.azw" (comma-separated)
 //! ```
 //!
 //! `DisabledImageExts` lists the extensions the user turned *off*, by
@@ -20,6 +21,11 @@
 //! format added in a later build is enabled unless the user says
 //! otherwise, and nothing in the registry depends on the order of
 //! [`SUPPORTED_IMAGE_EXTS`].
+//!
+//! `OverlayDisabledExts` works the same way for the identification
+//! overlay: it names the archive extensions (from
+//! [`crate::registry::EXTENSIONS`]) whose thumbnails stay bare even
+//! when `OverlayBorder` / `OverlayLabel` are on.
 //!
 //! Older builds wrote `EnabledImageExts` (REG_DWORD), a positional
 //! bitmask over that array. It is still read for migration and is
@@ -34,6 +40,8 @@ use std::sync::OnceLock;
 
 use winreg::RegKey;
 use winreg::enums::*;
+
+use crate::registry::EXTENSIONS;
 
 /// How to order image files within an archive before picking the
 /// "first" one for the thumbnail.
@@ -133,13 +141,28 @@ pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
 /// All supported extensions enabled. Used as the factory default and
 /// as the fallback when the registry key is missing or malformed.
 pub const fn default_enabled_image_exts_mask() -> u32 {
-    let n = SUPPORTED_IMAGE_EXTS.len();
+    full_mask(SUPPORTED_IMAGE_EXTS.len())
+}
+
+/// The identification overlay drawn on every archive extension. Used
+/// as the factory default and when the registry value is missing.
+pub const fn default_overlay_exts_mask() -> u32 {
+    full_mask(EXTENSIONS.len())
+}
+
+/// A mask with the low `n` bits set, one per entry of an `n`-long
+/// extension list.
+const fn full_mask(n: usize) -> u32 {
     if n >= 32 { u32::MAX } else { (1u32 << n) - 1 }
 }
 
 /// Registry value holding the extensions the user switched off, as a
 /// comma-separated list of names.
 const DISABLED_IMAGE_EXTS_VALUE: &str = "DisabledImageExts";
+
+/// Registry value holding the archive extensions the identification
+/// overlay is switched off for, as a comma-separated list of names.
+const OVERLAY_DISABLED_EXTS_VALUE: &str = "OverlayDisabledExts";
 
 /// Superseded registry value: a positional bitmask over the image
 /// extension list. Read for migration only, never written.
@@ -175,10 +198,19 @@ fn bit_for_ext(ext: &str) -> Option<u32> {
 /// downgrade: an older ArcThumb reading a list that mentions a format
 /// it cannot decode simply has nothing to clear.
 fn mask_from_disabled_list(list: &str) -> u32 {
-    let mut mask = default_enabled_image_exts_mask();
+    mask_from_disabled_names(SUPPORTED_IMAGE_EXTS, list)
+}
+
+/// Parse a comma-separated list of switched-off extensions into a
+/// mask over `names`: every entry of `names` starts set and each
+/// listed name clears its bit. Case-insensitive; blank and
+/// unrecognised entries are skipped.
+fn mask_from_disabled_names(names: &[&str], list: &str) -> u32 {
+    let mut mask = full_mask(names.len());
     for name in list.split(',') {
-        if let Some(bit) = bit_for_ext(name.trim()) {
-            mask &= !bit;
+        let name = name.trim();
+        if let Some(i) = names.iter().position(|e| e.eq_ignore_ascii_case(name)) {
+            mask &= !(1u32 << i);
         }
     }
     mask
@@ -187,8 +219,14 @@ fn mask_from_disabled_list(list: &str) -> u32 {
 /// Render the cleared bits of `mask` as a
 /// [`DISABLED_IMAGE_EXTS_VALUE`] string. Empty when nothing is off.
 fn disabled_list_from_mask(mask: u32) -> String {
+    disabled_names_from_mask(SUPPORTED_IMAGE_EXTS, mask)
+}
+
+/// Render the cleared bits of `mask` as a comma-separated list of the
+/// matching entries of `names`. Empty when nothing is off.
+fn disabled_names_from_mask(names: &[&str], mask: u32) -> String {
     let mut out = String::new();
-    for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+    for (i, ext) in names.iter().enumerate() {
         if mask & (1u32 << i) == 0 {
             if !out.is_empty() {
                 out.push(',');
@@ -244,6 +282,12 @@ pub struct Settings {
     /// [`Self::overlay_border`]. Dropped automatically at very small
     /// thumbnail sizes where the text would be unreadable.
     pub overlay_label: bool,
+    /// Bitmask over [`EXTENSIONS`]: bit `i` set = the overlay is drawn
+    /// on thumbnails of the extension at index `i`. Narrows
+    /// [`Self::overlay_border`] and [`Self::overlay_label`]; it turns
+    /// nothing on by itself. All set by default. In-memory
+    /// representation only; the registry stores names.
+    pub overlay_exts_mask: u32,
 }
 
 impl Default for Settings {
@@ -254,6 +298,7 @@ impl Default for Settings {
             enabled_image_exts_mask: default_enabled_image_exts_mask(),
             overlay_border: false,
             overlay_label: false,
+            overlay_exts_mask: default_overlay_exts_mask(),
         }
     }
 }
@@ -314,6 +359,9 @@ impl Settings {
         if let Ok(v) = key.get_value::<u32, _>("OverlayLabel") {
             out.overlay_label = v != 0;
         }
+        if let Ok(s) = key.get_value::<String, _>(OVERLAY_DISABLED_EXTS_VALUE) {
+            out.overlay_exts_mask = mask_from_disabled_names(EXTENSIONS, &s);
+        }
         out
     }
 
@@ -321,6 +369,17 @@ impl Settings {
     /// key if missing. Leaves other values (e.g. `Language`) untouched.
     pub fn save_to_registry(&self) -> std::io::Result<()> {
         self.save_to_subkey(SETTINGS_SUBKEY)
+    }
+
+    /// Should the identification overlay be drawn on a thumbnail of
+    /// the archive extension `ext` (with its dot, e.g. `".mobi"`)?
+    /// Case-insensitive. An extension outside [`EXTENSIONS`] has no
+    /// toggle of its own, so it is never excluded.
+    pub fn overlay_allowed_for(&self, ext: &str) -> bool {
+        match EXTENSIONS.iter().position(|e| e.eq_ignore_ascii_case(ext)) {
+            Some(i) => self.overlay_exts_mask & (1u32 << i) != 0,
+            None => true,
+        }
     }
 
     /// Is `name` a candidate image under the current settings?
@@ -385,6 +444,8 @@ impl Settings {
         key.set_value("OverlayBorder", &border)?;
         let label: u32 = if self.overlay_label { 1 } else { 0 };
         key.set_value("OverlayLabel", &label)?;
+        let overlay_off = disabled_names_from_mask(EXTENSIONS, self.overlay_exts_mask);
+        key.set_value(OVERLAY_DISABLED_EXTS_VALUE, &overlay_off)?;
         Ok(())
     }
 }
@@ -854,6 +915,11 @@ mod tests {
         // their bare cover thumbnails until the user opts in.
         assert!(!s.overlay_border, "border overlay defaults off");
         assert!(!s.overlay_label, "label overlay defaults off");
+        assert_eq!(
+            s.overlay_exts_mask,
+            default_overlay_exts_mask(),
+            "no extension is excluded from the overlay by default"
+        );
     }
 
     /// RAII helper that picks a unique throwaway subkey under
@@ -894,6 +960,7 @@ mod tests {
             enabled_image_exts_mask: 0b1010_1010,
             overlay_border: true,
             overlay_label: true,
+            overlay_exts_mask: overlay_mask_without(&[".mobi", ".azw"]),
         };
         original
             .save_to_subkey(scratch.path())
@@ -907,6 +974,93 @@ mod tests {
         assert_eq!(loaded.enabled_image_exts_mask, expected_mask);
         assert!(loaded.overlay_border, "border overlay round-trips");
         assert!(loaded.overlay_label, "label overlay round-trips");
+        assert_eq!(
+            loaded.overlay_exts_mask,
+            overlay_mask_without(&[".mobi", ".azw"]),
+            "overlay extension choices round-trip"
+        );
+    }
+
+    /// Helper: the overlay mask with exactly `exts` turned off.
+    fn overlay_mask_without(exts: &[&str]) -> u32 {
+        exts.iter().fold(default_overlay_exts_mask(), |mask, ext| {
+            let i = EXTENSIONS
+                .iter()
+                .position(|e| e == ext)
+                .expect("registered ext");
+            mask & !(1u32 << i)
+        })
+    }
+
+    #[test]
+    fn overlay_exts_are_stored_by_name() {
+        let scratch = ScratchSubkey::new("overlayexts");
+        let original = Settings {
+            overlay_exts_mask: overlay_mask_without(&[".mobi", ".azw"]),
+            ..Settings::default()
+        };
+        original.save_to_subkey(scratch.path()).unwrap();
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey(scratch.path()).unwrap();
+        let stored: String = key.get_value(OVERLAY_DISABLED_EXTS_VALUE).unwrap();
+        assert_eq!(stored, ".mobi,.azw");
+    }
+
+    #[test]
+    fn overlay_exts_round_trip_every_single_toggle() {
+        for ext in EXTENSIONS {
+            let scratch = ScratchSubkey::new("overlaybit");
+            let original = Settings {
+                overlay_exts_mask: overlay_mask_without(&[ext]),
+                ..Settings::default()
+            };
+            original.save_to_subkey(scratch.path()).unwrap();
+            let loaded = Settings::load_from_subkey(scratch.path());
+            assert_eq!(
+                loaded.overlay_exts_mask, original.overlay_exts_mask,
+                "{ext} round-trip"
+            );
+            assert!(!loaded.overlay_allowed_for(ext), "{ext} is off");
+        }
+    }
+
+    #[test]
+    fn overlay_exts_missing_value_keeps_every_extension_on() {
+        // An install that predates the value has only the two global
+        // toggles; reading it must not switch any extension off.
+        let scratch = ScratchSubkey::new("overlaymissing");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        key.set_value("OverlayLabel", &1u32).unwrap();
+        let loaded = Settings::load_from_subkey(scratch.path());
+        assert!(loaded.overlay_label);
+        assert_eq!(loaded.overlay_exts_mask, default_overlay_exts_mask());
+    }
+
+    #[test]
+    fn overlay_exts_list_ignores_case_blanks_and_unknown_names() {
+        assert_eq!(
+            mask_from_disabled_names(EXTENSIONS, " .MOBI, ,.pdf,.azw "),
+            overlay_mask_without(&[".mobi", ".azw"])
+        );
+        assert_eq!(
+            mask_from_disabled_names(EXTENSIONS, ""),
+            default_overlay_exts_mask()
+        );
+    }
+
+    #[test]
+    fn overlay_allowed_for_follows_the_mask() {
+        let s = Settings {
+            overlay_exts_mask: overlay_mask_without(&[".mobi"]),
+            ..Settings::default()
+        };
+        assert!(!s.overlay_allowed_for(".mobi"));
+        assert!(!s.overlay_allowed_for(".MOBI"));
+        assert!(s.overlay_allowed_for(".azw"));
+        assert!(s.overlay_allowed_for(".zip"));
+        // No toggle exists for an extension ArcThumb does not register.
+        assert!(s.overlay_allowed_for(".tar"));
     }
 
     #[test]

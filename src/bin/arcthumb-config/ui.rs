@@ -162,14 +162,16 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
 // Extension-list bundle
 // =============================================================================
 
-/// Both toggle lists ArcThumb exposes in the GUI: the per-archive
-/// shell registration list and the per-image-format thumbnail
-/// eligibility list. Bundled so `run_gui` doesn't have to clone and
-/// pass two `ExtensionModel`s through every callback.
+/// The toggle lists ArcThumb exposes in the GUI: the per-archive
+/// shell registration list, the per-image-format thumbnail
+/// eligibility list, and the per-archive overlay list. Bundled so
+/// `run_gui` doesn't have to clone and pass each `ExtensionModel`
+/// through every callback.
 #[derive(Clone)]
 struct ExtensionLists {
     archive: ExtensionModel,
     image: ExtensionModel,
+    overlay: ExtensionModel,
 }
 
 impl ExtensionLists {
@@ -180,21 +182,31 @@ impl ExtensionLists {
                 SUPPORTED_IMAGE_EXTS,
                 &m.image_ext_enabled,
             ),
+            overlay: ExtensionModel::from_enabled(&state::overlay_ext_mask_to_vec(
+                m.settings.overlay_exts_mask,
+            )),
         }
     }
 
     fn bind(&self, window: &MainWindow) {
         window.set_extensions(self.archive.as_model());
         window.set_image_extensions(self.image.as_model());
+        window.set_overlay_extensions(self.overlay.as_model());
         let archive = self.archive.clone();
         window.on_toggle_extension(move |i| archive.toggle(i as usize));
         let image = self.image.clone();
         window.on_toggle_image_extension(move |i| image.toggle(i as usize));
+        let overlay = self.overlay.clone();
+        window.on_toggle_overlay_extension(move |i| overlay.toggle(i as usize));
     }
 
     fn refresh_from(&self, m: &UiModel) {
         self.archive.replace_enabled(&m.ext_enabled);
         self.image.replace_enabled(&m.image_ext_enabled);
+        self.overlay
+            .replace_enabled(&state::overlay_ext_mask_to_vec(
+                m.settings.overlay_exts_mask,
+            ));
     }
 }
 
@@ -231,6 +243,7 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_enable_preview_label(SharedString::from(s.cb_enable_preview));
     window.set_overlay_border_label(SharedString::from(s.cb_overlay_border));
     window.set_overlay_label_label(SharedString::from(s.cb_overlay_label));
+    window.set_overlay_exts_caption(SharedString::from(s.overlay_exts_caption));
     window.set_btn_ok(SharedString::from(s.btn_ok));
     window.set_btn_cancel(SharedString::from(s.btn_cancel));
     window.set_btn_apply(SharedString::from(s.btn_apply));
@@ -269,6 +282,7 @@ fn collect_from_ui(
         enabled_image_exts_mask: image_mask,
         overlay_border: window.get_overlay_border(),
         overlay_label: window.get_overlay_label(),
+        overlay_exts_mask: state::overlay_ext_vec_to_mask(&lists.overlay.enabled_vec()),
     };
     (settings, ext_enabled, window.get_enable_preview())
 }
@@ -494,6 +508,46 @@ mod tests {
             assert!(collected.overlay_label, "label toggle round-trips");
         }
 
+        // ---- per-extension overlay list round-trips and toggles --
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let all = arcthumb::settings::default_overlay_exts_mask();
+            let settings = Settings {
+                overlay_label: true,
+                overlay_exts_mask: all & !(1u32 << 9), // .mobi off
+                ..Settings::default()
+            };
+            let model = UiModel {
+                image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
+                settings,
+                scope: arcthumb::registry::Scope::PerUser,
+                ext_enabled: [true; EXT_COUNT],
+                preview_enabled: false,
+            };
+            let lists = ExtensionLists::from_model(&model);
+            lists.bind(&window);
+            push_model(&window, &model);
+
+            let (collected, ext, _) = collect_from_ui(&window, &lists);
+            assert_eq!(collected, settings, "overlay list round-trips");
+
+            // Unticking .azw in the overlay grid changes the overlay
+            // mask only; the registration list is a separate model.
+            lists.overlay.toggle(10);
+            let (collected, ext_after, _) = collect_from_ui(&window, &lists);
+            assert_eq!(
+                collected.overlay_exts_mask,
+                all & !(1u32 << 9) & !(1u32 << 10),
+                ".mobi and .azw are off"
+            );
+            assert_eq!(ext_after, ext, "registration list is untouched");
+
+            // A reload from the registry snaps the grid back.
+            lists.refresh_from(&model);
+            let (collected, _, _) = collect_from_ui(&window, &lists);
+            assert_eq!(collected.overlay_exts_mask, settings.overlay_exts_mask);
+        }
+
         // ---- push_then_collect_round_trips_alphabetical_no_cover
         {
             let window = MainWindow::new().expect("create MainWindow");
@@ -660,6 +714,10 @@ mod tests {
             assert_eq!(
                 window.get_overlay_label_label(),
                 locale::EN.cb_overlay_label
+            );
+            assert_eq!(
+                window.get_overlay_exts_caption(),
+                locale::EN.overlay_exts_caption
             );
             assert_eq!(window.get_btn_ok(), locale::EN.btn_ok);
             assert_eq!(window.get_btn_cancel(), locale::EN.btn_cancel);

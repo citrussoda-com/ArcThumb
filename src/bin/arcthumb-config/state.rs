@@ -104,6 +104,18 @@ pub fn image_ext_vec_to_mask(flags: &[bool]) -> u32 {
     )
 }
 
+/// Expand `Settings::overlay_exts_mask` to a `Vec<bool>` parallel to
+/// `registry::EXTENSIONS`. `true` = the overlay is drawn on that
+/// extension.
+pub fn overlay_ext_mask_to_vec(mask: u32) -> Vec<bool> {
+    (0..EXT_COUNT).map(|i| (mask & (1u32 << i)) != 0).collect()
+}
+
+/// Fold the overlay checkbox grid back into `Settings::overlay_exts_mask`.
+pub fn overlay_ext_vec_to_mask(flags: &[bool]) -> u32 {
+    image_ext_vec_to_mask(flags)
+}
+
 /// Map a [`CoverMode`] to its position in the cover dropdown. The
 /// mapping is explicit so reordering the dropdown can't silently
 /// change which mode gets saved. Must stay in sync with the dropdown
@@ -206,6 +218,21 @@ mod tests {
         let expected =
             (0..(SUPPORTED_IMAGE_EXTS.len() + 4).min(32)).fold(0u32, |a, i| a | (1 << i));
         assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn overlay_mask_vec_round_trip_for_every_single_bit_cleared() {
+        use arcthumb::settings::default_overlay_exts_mask;
+        let all = default_overlay_exts_mask();
+        assert!(overlay_ext_mask_to_vec(all).iter().all(|&b| b));
+        for i in 0..EXT_COUNT {
+            let mask = all & !(1u32 << i);
+            let v = overlay_ext_mask_to_vec(mask);
+            assert_eq!(v.len(), EXT_COUNT);
+            assert!(!v[i], "slot {i} should be the false one");
+            assert_eq!(v.iter().filter(|&&b| !b).count(), 1);
+            assert_eq!(overlay_ext_vec_to_mask(&v), mask);
+        }
     }
 
     #[test]
