@@ -131,6 +131,13 @@ unsafe extern "system" fn preview_wnd_proc(
     }
 }
 
+/// The system window-background colour as `[r, g, b]`.
+fn system_window_rgb() -> [u8; 3] {
+    // COLORREF is 0x00BBGGRR.
+    let color = unsafe { GetSysColor(COLOR_WINDOW) };
+    [color as u8, (color >> 8) as u8, (color >> 16) as u8]
+}
+
 /// Build a brush for the system window-background colour. Caller
 /// must `DeleteObject` it after use. We don't use the standard
 /// `(COLOR_WINDOW + 1)` HBRUSH trick because `CreateSolidBrush` is
@@ -189,13 +196,18 @@ fn paint(hwnd: HWND, this: &ArcThumbPreviewHandler, commit: bool) {
                 blit_cached(hdc, cache.as_ref().unwrap(), off_x, off_y);
             } else if commit {
                 // Timer fired — build the pixel-perfect bitmap now.
-                let resized = img
+                let mut resized = img
                     .resize_exact(
                         dest_w as u32,
                         dest_h as u32,
                         image::imageops::FilterType::Triangle,
                     )
                     .to_rgba8();
+                // The cached bitmap is drawn with BitBlt, which ignores
+                // alpha, so bake the window colour in behind it.
+                if img.color().has_alpha() {
+                    bitmap::flatten_onto(&mut resized, system_window_rgb());
+                }
                 if let Ok(hbmp) = bitmap::from_rgba(&resized) {
                     *cache = Some(CachedBitmap {
                         width: dest_w,
