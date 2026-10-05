@@ -3,7 +3,7 @@
 //!
 //! Supported formats:
 //! - **ZIP** (`PK\x03\x04`) — via `zip` crate, direct Read+Seek
-//! - **7z**  (`7z\xBC\xAF\x27\x1C`) — via `sevenz-rust`, direct Read+Seek
+//! - **7z**  (`7z\xBC\xAF\x27\x1C`) — via `sevenz-rust2`, direct Read+Seek
 //! - **RAR** (`Rar!\x1A\x07\x00` / `Rar!\x1A\x07\x01\x00`) — via `unrar`,
 //!   which insists on a file path, so we spool the stream to `%TEMP%`.
 //! - **TAR/CBT** (`ustar` at offset 257) — via `tar` crate, Read only
