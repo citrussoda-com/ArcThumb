@@ -6,6 +6,7 @@
 #   3. Compile the Inno Setup installer
 #   4. Commit the version bump and create a `vX.Y.Z` tag
 #   5. Publish a GitHub Release with ArcThumb-Setup.exe attached
+#   6. (separate job) Submit a manifest PR to microsoft/winget-pkgs
 #
 # Everything happens in one workflow run, so there is no need for a
 # Personal Access Token to chain workflows. The default GITHUB_TOKEN
@@ -19,6 +20,17 @@
 #
 # The build step runs BEFORE the commit/tag push, so if the build
 # fails the repository is left untouched — no half-released versions.
+#
+# Re-running is safe. The `release` job checks what already exists for
+# the computed version before doing anything:
+#   - tag exists      -> the bump commit + tag push is skipped
+#   - release exists  -> the build and the release upload are skipped,
+#                        so a re-run never replaces a published installer
+#                        (the winget manifest pins its SHA256)
+# The winget submission lives in its own job, so "Re-run failed jobs"
+# after a winget hiccup retries only the submission, not the build.
+# The submission itself is skipped if a PR for that version is already
+# open or merged in microsoft/winget-pkgs.
 
 name: Release
 
@@ -32,6 +44,9 @@ jobs:
     runs-on: windows-latest
     # Don't loop on our own bump commits.
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      skip: ${{ steps.gate.outputs.skip }}
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v7
@@ -60,54 +75,78 @@ jobs:
           echo "version_type  = ${{ steps.version.outputs.version_type }}"
           echo "increment     = ${{ steps.version.outputs.increment }}"
 
-      - name: Skip if no version change
+      # Outputs:
+      #   skip        no bumpable commits since the last tag; nothing to do
+      #   tag_exists  vX.Y.Z is already on origin (a previous attempt pushed it)
+      #   publish     build + release are needed (skip == false and no
+      #               release for vX.Y.Z exists yet)
+      - name: Skip if no version change or already released
         id: gate
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          tag="v${{ steps.version.outputs.version }}"
           if [ "${{ steps.version.outputs.version_type }}" = "none" ]; then
             echo "No bumpable commits since the last tag — skipping."
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists on origin; the bump commit will not be pushed again."
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping build and upload."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Install Rust toolchain
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         uses: Swatinem/rust-cache@v2
 
       - name: Update Cargo.toml version
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         shell: bash
         run: |
           sed -i 's/^version = ".*"/version = "${{ steps.version.outputs.version }}"/' Cargo.toml
 
       - name: Update Cargo.lock
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         run: cargo update -p arcthumb
 
       - name: Update installer version
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         shell: bash
         run: |
           sed -i 's/#define MyAppVersion    ".*"/#define MyAppVersion    "${{ steps.version.outputs.version }}"/' installer/arcthumb.iss
 
       - name: Build release binaries
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         run: cargo build --release
 
       - name: Build Inno Setup installer
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         uses: Minionguyjpro/Inno-Setup-Action@v1.2.9
         with:
           path: installer/arcthumb.iss
           options: /O+
 
       - name: Verify installer exists
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         shell: pwsh
         run: |
           if (-Not (Test-Path "target/installer/ArcThumb-Setup.exe")) {
@@ -116,8 +155,12 @@ jobs:
           }
           Get-Item "target/installer/ArcThumb-Setup.exe" | Format-List Name, Length
 
+      # Skipped when the tag already exists: a re-run checks out the
+      # original commit, so pushing another bump commit on top of the one
+      # a previous attempt already pushed would be rejected as
+      # non-fast-forward.
       - name: Commit version bump and tag
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true' && steps.gate.outputs.tag_exists == 'false'
         shell: bash
         run: |
           git config user.name  "github-actions[bot]"
@@ -137,7 +180,7 @@ jobs:
           git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Create GitHub Release
-        if: steps.gate.outputs.skip == 'false'
+        if: steps.gate.outputs.publish == 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ steps.version.outputs.version }}"
@@ -146,21 +189,49 @@ jobs:
           draft: false
           prerelease: false
 
-      # Submit a manifest update PR to microsoft/winget-pkgs so the new
-      # version is reachable via `winget install CitrusSoda.ArcThumb`.
-      # Requires repo secret WINGET_TOKEN (a Classic PAT with `public_repo`
-      # scope). If the secret is missing, the step warns and skips without
-      # failing the release.
-      - name: Submit to winget-pkgs
-        if: steps.gate.outputs.skip == 'false'
+  # Submit a manifest update PR to microsoft/winget-pkgs so the new
+  # version is reachable via `winget install CitrusSoda.ArcThumb`.
+  # Requires repo secret WINGET_TOKEN (a Classic PAT with `public_repo`
+  # scope). If the secret is missing, the job warns and skips without
+  # failing the release.
+  #
+  # Separate job on purpose: wingetcreate talks to GitHub's fork-sync
+  # API, which fails now and then. When it does, "Re-run failed jobs"
+  # retries only this job against the already-published installer.
+  winget:
+    name: Submit to winget-pkgs
+    needs: release
+    if: needs.release.outputs.skip == 'false'
+    runs-on: windows-latest
+    steps:
+      - name: Submit manifest PR
         shell: pwsh
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
         run: |
           if (-not $env:WINGET_TOKEN) {
             Write-Warning "WINGET_TOKEN secret not set; skipping winget submission."
             exit 0
           }
+
+          # wingetcreate names its PRs "New version: <Id> version <Ver>".
+          # If one already exists (a previous attempt got through, or the
+          # PR was submitted by hand), don't open a duplicate.
+          # (No quotes inside the arguments: PowerShell mangles embedded
+          # double quotes when calling native executables, so the exact
+          # title match is done here rather than in jq.)
+          $title = "New version: CitrusSoda.ArcThumb version $env:VERSION"
+          $env:GH_TOKEN = $env:WINGET_TOKEN
+          $existing = gh pr list --repo microsoft/winget-pkgs --state all `
+            --search "$title in:title" --json number,title,state |
+            ConvertFrom-Json | Where-Object { $_.title -eq $title }
+          if ($existing) {
+            $list = ($existing | ForEach-Object { "#$($_.number) ($($_.state))" }) -join ", "
+            Write-Host "winget-pkgs already has a PR for ${env:VERSION}: $list - skipping."
+            exit 0
+          }
+
           Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
           # Give GitHub Releases CDN a moment to propagate the new asset URL
           # before wingetcreate tries to download it to compute SHA256.
@@ -173,10 +244,10 @@ jobs:
           # override wingetcreate fails with "Multiple matches found".
           # Adding a third installer entry later means adding a third
           # --urls argument with its own scope override.
-          $url = "https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/ArcThumb-Setup.exe"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$env:VERSION/ArcThumb-Setup.exe"
           .\wingetcreate.exe update CitrusSoda.ArcThumb `
-            --version ${{ steps.version.outputs.version }} `
-            --display-version ${{ steps.version.outputs.version }} `
+            --version $env:VERSION `
+            --display-version $env:VERSION `
             --urls "$url|x64|user" "$url|x64|machine" `
             --token $env:WINGET_TOKEN `
             --submit
