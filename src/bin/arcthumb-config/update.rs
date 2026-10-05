@@ -10,9 +10,9 @@
 //! * `LastSeenVersion` — newest release tag observed on GitHub by
 //!   `check_for_update`. Update-check bookkeeping only.
 //! * `LastRunVersion` — version of this binary the last time the
-//!   donation prompt was shown. The donation logic compares against
-//!   this one, because `LastSeenVersion` typically already holds the
-//!   new version before the user installs it.
+//!   GUI ran. The donation logic compares against this one, because
+//!   `LastSeenVersion` typically already holds the new version before
+//!   the user installs it.
 
 use std::os::windows::process::CommandExt;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -254,9 +254,11 @@ fn donation_version_to_offer(current: &str, last_run: &str) -> Option<String> {
     }
 }
 
-/// Write the current version into `LastRunVersion` so the donation
-/// prompt won't fire again until the next real update.
-pub fn record_donation_shown() {
+/// Write the current version into `LastRunVersion`. Called on every
+/// GUI launch, after [`should_show_donation`] has read the old value,
+/// so the prompt fires on the first launch after an update and not
+/// again until the next one.
+pub fn record_run_version() {
     if let Some(key) = open_or_create_key() {
         let _ = key.set_value("LastRunVersion", &effective_version().to_string());
     }

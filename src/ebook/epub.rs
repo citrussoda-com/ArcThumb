@@ -30,6 +30,13 @@ use quick_xml::XmlVersion;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 
+use crate::limits;
+
+/// Cap on `container.xml` and the OPF. Both are small XML documents;
+/// an OPF for a book with thousands of manifest items is well under
+/// a megabyte.
+const MAX_METADATA_SIZE: u64 = 16 * 1024 * 1024; // 16 MiB
+
 /// Try to extract the EPUB cover from an already-opened ZIP archive.
 ///
 /// Returns `Some((zip_path, bytes))` if a cover was found via OPF
@@ -47,17 +54,80 @@ pub fn try_extract_cover<R: Read + Seek>(
     let opf_xml = read_entry_to_string(archive, &opf_path)?;
     let cover_href = find_cover_href(&opf_xml)?;
 
-    // Step 3: resolve cover href relative to the OPF's directory
+    // Step 3: resolve cover href relative to the OPF's directory.
+    // An href is a URL reference, so `cover%20art.jpg` names the entry
+    // `cover art.jpg`. Some tools write the raw name instead, so try
+    // the decoded form first and the literal one after it.
     let opf_dir = parent_dir(&opf_path);
-    let zip_path = join_zip_path(opf_dir, &cover_href);
+    let href = strip_fragment(&cover_href);
+    let decoded = join_zip_path(opf_dir, &percent_decode(href));
+    let literal = join_zip_path(opf_dir, href);
+    let zip_path = if archive.index_for_name(&decoded).is_some() {
+        decoded
+    } else {
+        literal
+    };
 
     // Step 4: read the cover file from the ZIP
-    let mut entry = archive.by_name(&zip_path).ok()?;
-    let size = entry.size() as usize;
-    let mut bytes = Vec::with_capacity(size);
-    entry.read_to_end(&mut bytes).ok()?;
+    let entry = archive.by_name(&zip_path).ok()?;
+    let size = entry.size();
+    let bytes = limits::read_capped(entry, size, limits::MAX_ENTRY_SIZE).ok()?;
+
+    // EPUB 2 books often point the cover at an XHTML wrapper page (or
+    // an SVG) instead of at the image. Neither decodes as a thumbnail,
+    // so report "no cover found" and let the caller scan for images.
+    if looks_like_markup(&bytes) {
+        return None;
+    }
 
     Some((zip_path, bytes))
+}
+
+/// True if `bytes` starts like an XML/HTML document: optional UTF-8
+/// BOM and whitespace, then `<`. No raster image format starts that
+/// way.
+fn looks_like_markup(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    bytes
+        .iter()
+        .find(|b| !b.is_ascii_whitespace())
+        .is_some_and(|&b| b == b'<')
+}
+
+/// Drop a `#fragment` from an href. Manifest hrefs shouldn't carry
+/// one, but a cover reference copied from a `<guide>` or a spine link
+/// sometimes does.
+fn strip_fragment(href: &str) -> &str {
+    href.split_once('#').map_or(href, |(path, _)| path)
+}
+
+/// Decode `%XX` escapes. Returns the input unchanged if it has none,
+/// if an escape is malformed, or if the result isn't UTF-8 — in those
+/// cases the href was most likely a literal file name.
+fn percent_decode(href: &str) -> String {
+    if !href.contains('%') {
+        return href.to_string();
+    }
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let bytes = href.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let (Some(hi), Some(lo)) = (
+                bytes.get(i + 1).copied().and_then(hex),
+                bytes.get(i + 2).copied().and_then(hex),
+            ) else {
+                return href.to_string();
+            };
+            out.push(hi << 4 | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| href.to_string())
 }
 
 // =============================================================================
@@ -70,17 +140,17 @@ fn read_entry_to_string<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Option<String> {
-    let mut entry = archive.by_name(name).ok()?;
-    let mut s = String::new();
-    entry.read_to_string(&mut s).ok()?;
-    Some(s)
+    let entry = archive.by_name(name).ok()?;
+    let size = entry.size();
+    let bytes = limits::read_capped(entry, size, MAX_METADATA_SIZE).ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// Strip an XML namespace prefix (`opf:item` → `item`). EPUB OPF
 /// files often use a namespace prefix and we don't want to do real
 /// namespace resolution for two-tag matching.
-fn strip_namespace(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
+fn strip_namespace(name: &str) -> &str {
+    match name.find(':') {
         Some(idx) => &name[idx + 1..],
         None => name,
     }
@@ -89,7 +159,7 @@ fn strip_namespace(name: &[u8]) -> &[u8] {
 /// True if `e`'s tag name (with any namespace prefix stripped) equals
 /// `expected`. Inlined as a helper because the borrow checker needs
 /// the `QName` to live in a named local while we look at its bytes.
-fn local_name_eq(e: &BytesStart, expected: &[u8]) -> bool {
+fn local_name_eq(e: &BytesStart, expected: &str) -> bool {
     let qname = e.name();
     strip_namespace(qname.as_ref()) == expected
 }
@@ -97,13 +167,13 @@ fn local_name_eq(e: &BytesStart, expected: &[u8]) -> bool {
 /// Find the value of an attribute by local name (namespace prefixes
 /// stripped). Decodes XML character entities so paths containing
 /// `&amp;` round-trip correctly.
-fn attr_value(e: &BytesStart, reader: &Reader<&[u8]>, key: &[u8]) -> Option<String> {
+fn attr_value(e: &BytesStart, key: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         let attr_qname = attr.key;
         let attr_local = strip_namespace(attr_qname.as_ref());
         if attr_local == key {
             return attr
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .normalized_value(XmlVersion::Implicit1_0)
                 .ok()
                 .map(|cow| cow.into_owned());
         }
@@ -137,10 +207,10 @@ fn parse_container_xml(xml: &str) -> Option<String> {
 /// `None` if `e` is not a `<rootfile>` or has no `full-path`. Lifted
 /// out of `parse_container_xml` so the caller's match arm stays flat.
 fn rootfile_full_path(e: &BytesStart) -> Option<String> {
-    if !local_name_eq(e, b"rootfile") {
+    if !local_name_eq(e, "rootfile") {
         return None;
     }
-    attr_value(e, &Reader::from_str(""), b"full-path")
+    attr_value(e, "full-path")
 }
 
 /// Single-pass scan of an OPF document. Collects manifest items,
@@ -159,10 +229,10 @@ fn find_cover_href(xml: &str) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
-                if local_name_eq(&e, b"item") {
-                    handle_item(&e, &reader, &mut items, &mut epub3_cover_href);
-                } else if local_name_eq(&e, b"meta") {
-                    handle_meta(&e, &reader, &mut epub2_cover_id);
+                if local_name_eq(&e, "item") {
+                    handle_item(&e, &mut items, &mut epub3_cover_href);
+                } else if local_name_eq(&e, "meta") {
+                    handle_meta(&e, &mut epub2_cover_id);
                 }
             }
             Ok(Event::Eof) => break,
@@ -187,13 +257,12 @@ fn find_cover_href(xml: &str) -> Option<String> {
 
 fn handle_item(
     e: &BytesStart,
-    reader: &Reader<&[u8]>,
     items: &mut HashMap<String, String>,
     epub3_cover_href: &mut Option<String>,
 ) {
-    let id = attr_value(e, reader, b"id");
-    let href = attr_value(e, reader, b"href");
-    let properties = attr_value(e, reader, b"properties");
+    let id = attr_value(e, "id");
+    let href = attr_value(e, "href");
+    let properties = attr_value(e, "properties");
 
     if let (Some(id), Some(href)) = (id, href.clone()) {
         items.insert(id, href.clone());
@@ -209,9 +278,9 @@ fn handle_item(
     }
 }
 
-fn handle_meta(e: &BytesStart, reader: &Reader<&[u8]>, epub2_cover_id: &mut Option<String>) {
-    let name = attr_value(e, reader, b"name");
-    let content = attr_value(e, reader, b"content");
+fn handle_meta(e: &BytesStart, epub2_cover_id: &mut Option<String>) {
+    let name = attr_value(e, "name");
+    let content = attr_value(e, "content");
     if let (Some(n), Some(c)) = (name, content)
         && n == "cover"
         && epub2_cover_id.is_none()
@@ -323,6 +392,39 @@ mod tests {
     }
 
     // ---- container.xml parsing ---------------------------------
+
+    #[test]
+    fn percent_decode_handles_escapes_and_leaves_the_rest() {
+        assert_eq!(percent_decode("cover.jpg"), "cover.jpg");
+        assert_eq!(percent_decode("cover%20art.jpg"), "cover art.jpg");
+        assert_eq!(
+            percent_decode("%E8%A1%A8%E7%B4%99.jpg"),
+            "\u{8868}\u{7d19}.jpg"
+        );
+        assert_eq!(percent_decode("a%2fb"), "a/b");
+        // Malformed or non-UTF-8 escapes: keep the href as written.
+        assert_eq!(percent_decode("100%.jpg"), "100%.jpg");
+        assert_eq!(percent_decode("50%zz.jpg"), "50%zz.jpg");
+        assert_eq!(percent_decode("tail%2"), "tail%2");
+        assert_eq!(percent_decode("%FF.jpg"), "%FF.jpg");
+    }
+
+    #[test]
+    fn strip_fragment_drops_everything_from_the_hash() {
+        assert_eq!(strip_fragment("cover.jpg"), "cover.jpg");
+        assert_eq!(strip_fragment("cover.jpg#x"), "cover.jpg");
+        assert_eq!(strip_fragment("#only"), "");
+    }
+
+    #[test]
+    fn looks_like_markup_tells_xml_from_images() {
+        assert!(looks_like_markup(b"<?xml version=\"1.0\"?><html/>"));
+        assert!(looks_like_markup(b"\xEF\xBB\xBF\n  <svg/>"));
+        assert!(!looks_like_markup(b"\x89PNG\r\n\x1a\n"));
+        assert!(!looks_like_markup(b"\xFF\xD8\xFF\xE0"));
+        assert!(!looks_like_markup(b"GIF89a"));
+        assert!(!looks_like_markup(b""));
+    }
 
     #[test]
     fn container_xml_finds_rootfile() {

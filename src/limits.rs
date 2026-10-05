@@ -37,6 +37,41 @@ pub const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 /// spend a minute decoding a 1 GB TIFF.
 pub const MAX_ENTRY_SIZE: u64 = 500 * 1024 * 1024; // 500 MiB
 
+/// Maximum size of the 7z metadata header we let `sevenz-rust` load.
+/// The crate allocates the size declared in the 32-byte signature
+/// header without checking it, so a tiny file can ask for gigabytes.
+/// A real header for 100k entries is a few MiB.
+pub const MAX_SEVENZ_HEADER_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
+
+/// Maximum number of bytes we'll decompress and throw away to reach
+/// an entry inside a solid 7z block. Entries in a solid block can only
+/// be decoded in order, so reaching a late one costs CPU proportional
+/// to everything in front of it.
+pub const MAX_SOLID_SKIP: u64 = 512 * 1024 * 1024; // 512 MiB
+
+/// Read `reader` to the end, failing once more than `cap` bytes come
+/// out. `size_hint` is the size the container declares for the entry;
+/// it only pre-sizes the buffer (clamped to `cap`) and is never trusted
+/// as a bound, because a decompressor keeps producing bytes for as
+/// long as the compressed stream says so.
+pub fn read_capped<R: std::io::Read>(
+    reader: R,
+    size_hint: u64,
+    cap: u64,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut buf = Vec::with_capacity(size_hint.min(cap) as usize);
+    let read = reader.take(cap.saturating_add(1)).read_to_end(&mut buf)?;
+    if read as u64 > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("entry exceeds the {cap} byte limit"),
+        ));
+    }
+    Ok(buf)
+}
+
 /// Maximum decoded image dimension (width or height, in pixels).
 /// Enforced via `image::Limits` before full decode.
 pub const MAX_IMAGE_DIMENSION: u32 = 32_768;
@@ -84,3 +119,30 @@ const _: () = {
     // small archive entry could still trip the decoder cap.
     assert!(MAX_IMAGE_ALLOC >= MAX_ENTRY_SIZE);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::read_capped;
+    use std::io::Cursor;
+
+    #[test]
+    fn read_capped_returns_data_up_to_the_cap() {
+        let data = vec![7u8; 100];
+        assert_eq!(read_capped(Cursor::new(&data), 100, 100).unwrap(), data);
+    }
+
+    #[test]
+    fn read_capped_rejects_more_than_the_cap() {
+        // The declared size says 10 bytes; the stream keeps going.
+        let data = vec![7u8; 101];
+        assert!(read_capped(Cursor::new(&data), 10, 100).is_err());
+    }
+
+    #[test]
+    fn read_capped_does_not_trust_a_huge_size_hint() {
+        let data = vec![7u8; 4];
+        let buf = read_capped(Cursor::new(&data), u64::MAX, 64).unwrap();
+        assert_eq!(buf, data);
+        assert!(buf.capacity() <= 64);
+    }
+}

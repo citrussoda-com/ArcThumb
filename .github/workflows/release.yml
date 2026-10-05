@@ -40,7 +40,7 @@ jobs:
 
       - name: Compute next version
         id: version
-        uses: paulhatch/semantic-version@v6.0.2
+        uses: paulhatch/semantic-version@v6.0.4
         with:
           tag_prefix: "v"
           # Conventional Commits — `feat!:` or `feat(scope)!:` etc.
@@ -101,7 +101,7 @@ jobs:
 
       - name: Build Inno Setup installer
         if: steps.gate.outputs.skip == 'false'
-        uses: Minionguyjpro/Inno-Setup-Action@v1.2.8
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.9
         with:
           path: installer/arcthumb.iss
           options: /O+

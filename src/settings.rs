@@ -10,10 +10,27 @@
 //! HKEY_CURRENT_USER\Software\ArcThumb
 //!     SortOrder         REG_SZ    "natural" | "alphabetical"
 //!     CoverMode         REG_SZ    "ignore" | "prefer" | "only"
-//!     EnabledImageExts  REG_DWORD bitmask over SUPPORTED_IMAGE_EXTS
+//!     DisabledImageExts REG_SZ    ".tiff,.tif" (comma-separated)
 //!     OverlayBorder     REG_DWORD 0 | 1
 //!     OverlayLabel      REG_DWORD 0 | 1
+//!     OverlayDisabledExts REG_SZ  ".mobi,.azw" (comma-separated)
 //! ```
+//!
+//! `DisabledImageExts` lists the extensions the user turned *off*, by
+//! name. Storing the exclusions rather than the inclusions means a
+//! format added in a later build is enabled unless the user says
+//! otherwise, and nothing in the registry depends on the order of
+//! [`SUPPORTED_IMAGE_EXTS`].
+//!
+//! `OverlayDisabledExts` works the same way for the identification
+//! overlay: it names the archive extensions (from
+//! [`crate::registry::EXTENSIONS`]) whose thumbnails stay bare even
+//! when `OverlayBorder` / `OverlayLabel` are on.
+//!
+//! Older builds wrote `EnabledImageExts` (REG_DWORD), a positional
+//! bitmask over that array. It is still read for migration and is
+//! deleted on the next save; `LEGACY_IMAGE_EXT_BITS` holds the frozen
+//! bit-to-name table that migration resolves through.
 //!
 //! Users can tweak these by hand in `regedit` until a proper config
 //! GUI (Phase 4f.2) exists.
@@ -23,6 +40,8 @@ use std::sync::OnceLock;
 
 use winreg::RegKey;
 use winreg::enums::*;
+
+use crate::registry::EXTENSIONS;
 
 /// How to order image files within an archive before picking the
 /// "first" one for the thumbnail.
@@ -99,8 +118,12 @@ impl CoverMode {
 /// Image extensions ArcThumb can decode when extracted from an
 /// archive. This is the fixed compile-time *supported set*; the
 /// user-facing `Settings::enabled_image_exts_mask` picks a subset.
-/// Order is load-bearing: bit `i` of the mask refers to index `i`
-/// here, so never reorder or delete entries — append only.
+///
+/// Order determines bit positions in that mask and the row order of
+/// the config GUI checkbox grid, both of which live and die with a
+/// single build. Nothing persisted depends on it: the registry stores
+/// extension *names*, so reordering or removing an entry here cannot
+/// silently remap a user saved choices onto the wrong formats.
 pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
     ".jpg",
     ".jpeg",
@@ -118,8 +141,120 @@ pub const SUPPORTED_IMAGE_EXTS: &[&str] = &[
 /// All supported extensions enabled. Used as the factory default and
 /// as the fallback when the registry key is missing or malformed.
 pub const fn default_enabled_image_exts_mask() -> u32 {
-    let n = SUPPORTED_IMAGE_EXTS.len();
+    full_mask(SUPPORTED_IMAGE_EXTS.len())
+}
+
+/// The identification overlay drawn on every archive extension. Used
+/// as the factory default and when the registry value is missing.
+pub const fn default_overlay_exts_mask() -> u32 {
+    full_mask(EXTENSIONS.len())
+}
+
+/// A mask with the low `n` bits set, one per entry of an `n`-long
+/// extension list.
+const fn full_mask(n: usize) -> u32 {
     if n >= 32 { u32::MAX } else { (1u32 << n) - 1 }
+}
+
+/// Registry value holding the extensions the user switched off, as a
+/// comma-separated list of names.
+const DISABLED_IMAGE_EXTS_VALUE: &str = "DisabledImageExts";
+
+/// Registry value holding the archive extensions the identification
+/// overlay is switched off for, as a comma-separated list of names.
+const OVERLAY_DISABLED_EXTS_VALUE: &str = "OverlayDisabledExts";
+
+/// Superseded registry value: a positional bitmask over the image
+/// extension list. Read for migration only, never written.
+const LEGACY_ENABLED_IMAGE_EXTS_VALUE: &str = "EnabledImageExts";
+
+/// Bit assignments used by [`LEGACY_ENABLED_IMAGE_EXTS_VALUE`], frozen
+/// at the point the registry switched to storing names. Index = bit
+/// position, entry = the extension that bit stood for.
+///
+/// This table must never be edited. It is the only thing that still
+/// gives meaning to a mask written by an older build, and resolving
+/// legacy bits through it rather than through the live array is what
+/// makes the migration survive later edits to
+/// [`SUPPORTED_IMAGE_EXTS`]. `.jxl` is deliberately absent: it was
+/// never enabled in a build that wrote this value.
+const LEGACY_IMAGE_EXT_BITS: &[&str] = &[
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".ico",
+];
+
+/// Mask bit for `ext`, if this build supports it. Case-insensitive.
+fn bit_for_ext(ext: &str) -> Option<u32> {
+    SUPPORTED_IMAGE_EXTS
+        .iter()
+        .position(|e| e.eq_ignore_ascii_case(ext))
+        .map(|i| 1u32 << i)
+}
+
+/// Parse a [`DISABLED_IMAGE_EXTS_VALUE`] string into an enabled mask.
+///
+/// Every extension this build supports starts enabled and each listed
+/// name clears its bit. Blank entries are skipped and unrecognised
+/// names are ignored, which is what lets the value survive a
+/// downgrade: an older ArcThumb reading a list that mentions a format
+/// it cannot decode simply has nothing to clear.
+fn mask_from_disabled_list(list: &str) -> u32 {
+    mask_from_disabled_names(SUPPORTED_IMAGE_EXTS, list)
+}
+
+/// Parse a comma-separated list of switched-off extensions into a
+/// mask over `names`: every entry of `names` starts set and each
+/// listed name clears its bit. Case-insensitive; blank and
+/// unrecognised entries are skipped.
+fn mask_from_disabled_names(names: &[&str], list: &str) -> u32 {
+    let mut mask = full_mask(names.len());
+    for name in list.split(',') {
+        let name = name.trim();
+        if let Some(i) = names.iter().position(|e| e.eq_ignore_ascii_case(name)) {
+            mask &= !(1u32 << i);
+        }
+    }
+    mask
+}
+
+/// Render the cleared bits of `mask` as a
+/// [`DISABLED_IMAGE_EXTS_VALUE`] string. Empty when nothing is off.
+fn disabled_list_from_mask(mask: u32) -> String {
+    disabled_names_from_mask(SUPPORTED_IMAGE_EXTS, mask)
+}
+
+/// Render the cleared bits of `mask` as a comma-separated list of the
+/// matching entries of `names`. Empty when nothing is off.
+fn disabled_names_from_mask(names: &[&str], mask: u32) -> String {
+    let mut out = String::new();
+    for (i, ext) in names.iter().enumerate() {
+        if mask & (1u32 << i) == 0 {
+            if !out.is_empty() {
+                out.push(',');
+            }
+            out.push_str(ext);
+        }
+    }
+    out
+}
+
+/// Migrate a legacy positional bitmask to an enabled mask for this
+/// build, resolving each bit to an extension name through
+/// [`LEGACY_IMAGE_EXT_BITS`] so the result does not depend on how
+/// [`SUPPORTED_IMAGE_EXTS`] happens to be ordered today.
+///
+/// Extensions the legacy table never covered stay enabled, so a
+/// format added after the user last saved their settings is opt-out
+/// rather than opt-in.
+fn mask_from_legacy_bits(bits: u32) -> u32 {
+    let mut mask = default_enabled_image_exts_mask();
+    for (i, ext) in LEGACY_IMAGE_EXT_BITS.iter().enumerate() {
+        if bits & (1u32 << i) == 0
+            && let Some(bit) = bit_for_ext(ext)
+        {
+            mask &= !bit;
+        }
+    }
+    mask
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +267,8 @@ pub struct Settings {
     /// Bitmask over `SUPPORTED_IMAGE_EXTS`: bit `i` set = extension
     /// at index `i` is eligible as a thumbnail source inside
     /// archives. Only bits < `SUPPORTED_IMAGE_EXTS.len()` are
-    /// meaningful; higher bits are ignored.
+    /// meaningful; higher bits are ignored. In-memory representation
+    /// only; the registry stores names.
     pub enabled_image_exts_mask: u32,
     /// Bake a coloured identification border into the thumbnail, so
     /// archives are easier to tell apart from plain images in
@@ -146,6 +282,12 @@ pub struct Settings {
     /// [`Self::overlay_border`]. Dropped automatically at very small
     /// thumbnail sizes where the text would be unreadable.
     pub overlay_label: bool,
+    /// Bitmask over [`EXTENSIONS`]: bit `i` set = the overlay is drawn
+    /// on thumbnails of the extension at index `i`. Narrows
+    /// [`Self::overlay_border`] and [`Self::overlay_label`]; it turns
+    /// nothing on by itself. All set by default. In-memory
+    /// representation only; the registry stores names.
+    pub overlay_exts_mask: u32,
 }
 
 impl Default for Settings {
@@ -156,6 +298,7 @@ impl Default for Settings {
             enabled_image_exts_mask: default_enabled_image_exts_mask(),
             overlay_border: false,
             overlay_label: false,
+            overlay_exts_mask: default_overlay_exts_mask(),
         }
     }
 }
@@ -200,17 +343,24 @@ impl Settings {
                 CoverMode::Ignore
             };
         }
-        if let Ok(v) = key.get_value::<u32, _>("EnabledImageExts") {
-            // Mask unused high bits so a stale value from a build
-            // with more supported formats can't light up phantom
-            // entries after a downgrade.
-            out.enabled_image_exts_mask = v & default_enabled_image_exts_mask();
+        // Image extensions are stored by name. Older builds wrote a
+        // positional bitmask instead, so migrate that when the
+        // current value is absent. Both routes build the mask up from
+        // "everything this build supports", so a stale value can
+        // never light up a format we cannot decode.
+        if let Ok(s) = key.get_value::<String, _>(DISABLED_IMAGE_EXTS_VALUE) {
+            out.enabled_image_exts_mask = mask_from_disabled_list(&s);
+        } else if let Ok(v) = key.get_value::<u32, _>(LEGACY_ENABLED_IMAGE_EXTS_VALUE) {
+            out.enabled_image_exts_mask = mask_from_legacy_bits(v);
         }
         if let Ok(v) = key.get_value::<u32, _>("OverlayBorder") {
             out.overlay_border = v != 0;
         }
         if let Ok(v) = key.get_value::<u32, _>("OverlayLabel") {
             out.overlay_label = v != 0;
+        }
+        if let Ok(s) = key.get_value::<String, _>(OVERLAY_DISABLED_EXTS_VALUE) {
+            out.overlay_exts_mask = mask_from_disabled_names(EXTENSIONS, &s);
         }
         out
     }
@@ -219,6 +369,17 @@ impl Settings {
     /// key if missing. Leaves other values (e.g. `Language`) untouched.
     pub fn save_to_registry(&self) -> std::io::Result<()> {
         self.save_to_subkey(SETTINGS_SUBKEY)
+    }
+
+    /// Should the identification overlay be drawn on a thumbnail of
+    /// the archive extension `ext` (with its dot, e.g. `".mobi"`)?
+    /// Case-insensitive. An extension outside [`EXTENSIONS`] has no
+    /// toggle of its own, so it is never excluded.
+    pub fn overlay_allowed_for(&self, ext: &str) -> bool {
+        match EXTENSIONS.iter().position(|e| e.eq_ignore_ascii_case(ext)) {
+            Some(i) => self.overlay_exts_mask & (1u32 << i) != 0,
+            None => true,
+        }
     }
 
     /// Is `name` a candidate image under the current settings?
@@ -250,6 +411,7 @@ impl Settings {
     /// `None`, which the archive backends turn into a "no image" error
     /// and ultimately a default Explorer icon.
     pub fn pick_first_image<T: ImageCandidate>(&self, mut items: Vec<T>) -> Option<T> {
+        items.retain(|t| !is_junk_entry(t.name()));
         if items.is_empty() {
             return None;
         }
@@ -272,12 +434,18 @@ impl Settings {
         let (key, _) = hkcu.create_subkey(subkey)?;
         key.set_value("SortOrder", &self.sort_order.as_registry_value())?;
         key.set_value("CoverMode", &self.cover_mode.as_registry_value())?;
-        let mask = self.enabled_image_exts_mask & default_enabled_image_exts_mask();
-        key.set_value("EnabledImageExts", &mask)?;
+        let disabled = disabled_list_from_mask(self.enabled_image_exts_mask);
+        key.set_value(DISABLED_IMAGE_EXTS_VALUE, &disabled)?;
+        // Drop the superseded bitmask so there is one source of
+        // truth. A downgrade past this point finds no image-extension
+        // value at all and falls back to enabling everything.
+        let _ = key.delete_value(LEGACY_ENABLED_IMAGE_EXTS_VALUE);
         let border: u32 = if self.overlay_border { 1 } else { 0 };
         key.set_value("OverlayBorder", &border)?;
         let label: u32 = if self.overlay_label { 1 } else { 0 };
         key.set_value("OverlayLabel", &label)?;
+        let overlay_off = disabled_names_from_mask(EXTENSIONS, self.overlay_exts_mask);
+        key.set_value(OVERLAY_DISABLED_EXTS_VALUE, &overlay_off)?;
         Ok(())
     }
 }
@@ -351,6 +519,17 @@ fn is_cover_name(path: &str) -> bool {
     )
 }
 
+/// Is this entry macOS metadata rather than a real image? Archives
+/// made with Finder carry an AppleDouble sidecar for every file
+/// (`__MACOSX/dir/._001.jpg`). It has the image's extension but holds
+/// a resource fork, and `_` sorts ahead of letters, so without this it
+/// would be picked first and then fail to decode.
+fn is_junk_entry(path: &str) -> bool {
+    let mut components = path.rsplit(['/', '\\']);
+    let basename = components.next().unwrap_or(path);
+    basename.starts_with("._") || components.any(|dir| dir == "__MACOSX")
+}
+
 /// Natural sort comparator: runs of ASCII digits compared as
 /// integers, everything else compared case-insensitively byte-wise.
 /// Non-ASCII characters compare by their UTF-8 byte order, which is
@@ -390,7 +569,15 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
             }
         }
     }
-    ab.len().cmp(&bb.len())
+    // At least one side is used up. Whichever still has characters left
+    // sorts after. The unconsumed lengths are what matter here, not the
+    // totals: leading zeros make the consumed parts differ in length
+    // ("a01" against "a1b"), and comparing totals called those two
+    // equal. Total length only breaks ties between names that differ in
+    // nothing but leading zeros, to keep the order deterministic.
+    (ab.len() - i)
+        .cmp(&(bb.len() - j))
+        .then(ab.len().cmp(&bb.len()))
 }
 
 fn strip_leading_zeros(s: &[u8]) -> &[u8] {
@@ -450,6 +637,20 @@ mod tests {
     #[test]
     fn natural_sort_equal_strings() {
         assert_eq!(natural_cmp("page01.jpg", "page01.jpg"), Ordering::Equal);
+    }
+
+    #[test]
+    fn natural_sort_leading_zeros_do_not_hide_a_longer_tail() {
+        // Same total length, but "a1b" has a character left after the
+        // number and "a01" does not.
+        assert_eq!(natural_cmp("a01", "a1b"), Ordering::Less);
+        assert_eq!(natural_cmp("a1b", "a01"), Ordering::Greater);
+        // The order has to be consistent across a third name.
+        assert_eq!(natural_cmp("a01", "a1a"), Ordering::Less);
+        assert_eq!(natural_cmp("a1a", "a1b"), Ordering::Less);
+        // Names equal up to leading zeros still get a stable order.
+        assert_eq!(natural_cmp("a1", "a01"), Ordering::Less);
+        assert_eq!(natural_cmp("a01", "a1"), Ordering::Greater);
     }
 
     #[test]
@@ -522,6 +723,33 @@ mod tests {
         assert_eq!(
             Settings::default().pick_first_image(Vec::<String>::new()),
             None
+        );
+    }
+
+    #[test]
+    fn pick_first_image_skips_macos_metadata() {
+        let s = Settings::default();
+        let picked = s.pick_first_image(vec![
+            "__MACOSX/MyComic/._001.jpg".to_string(),
+            "MyComic/._cover.jpg".to_string(),
+            "MyComic/002.jpg".to_string(),
+            "MyComic/001.jpg".to_string(),
+        ]);
+        assert_eq!(picked, Some("MyComic/001.jpg".to_string()));
+
+        // Backslash separators, as written by some Windows tools.
+        let picked = s.pick_first_image(vec!["__MACOSX\\._a.png".to_string(), "b.png".to_string()]);
+        assert_eq!(picked, Some("b.png".to_string()));
+
+        // Nothing but metadata means no image at all.
+        assert_eq!(
+            s.pick_first_image(vec!["__MACOSX/._001.jpg".to_string()]),
+            None
+        );
+        // A name that merely starts with an underscore is a real file.
+        assert_eq!(
+            s.pick_first_image(vec!["_001.jpg".to_string()]),
+            Some("_001.jpg".to_string())
         );
     }
 
@@ -687,6 +915,11 @@ mod tests {
         // their bare cover thumbnails until the user opts in.
         assert!(!s.overlay_border, "border overlay defaults off");
         assert!(!s.overlay_label, "label overlay defaults off");
+        assert_eq!(
+            s.overlay_exts_mask,
+            default_overlay_exts_mask(),
+            "no extension is excluded from the overlay by default"
+        );
     }
 
     /// RAII helper that picks a unique throwaway subkey under
@@ -727,19 +960,107 @@ mod tests {
             enabled_image_exts_mask: 0b1010_1010,
             overlay_border: true,
             overlay_label: true,
+            overlay_exts_mask: overlay_mask_without(&[".mobi", ".azw"]),
         };
         original
             .save_to_subkey(scratch.path())
             .expect("save to scratch subkey");
         let loaded = Settings::load_from_subkey(scratch.path());
-        // The mask is ANDed with the default on save, so compare
-        // against the AND-ed form.
+        // Save records the cleared bits by name, so only bits inside
+        // the supported range can come back.
         let expected_mask = 0b1010_1010 & default_enabled_image_exts_mask();
         assert_eq!(loaded.sort_order, SortOrder::Alphabetical);
         assert_eq!(loaded.cover_mode, CoverMode::Only);
         assert_eq!(loaded.enabled_image_exts_mask, expected_mask);
         assert!(loaded.overlay_border, "border overlay round-trips");
         assert!(loaded.overlay_label, "label overlay round-trips");
+        assert_eq!(
+            loaded.overlay_exts_mask,
+            overlay_mask_without(&[".mobi", ".azw"]),
+            "overlay extension choices round-trip"
+        );
+    }
+
+    /// Helper: the overlay mask with exactly `exts` turned off.
+    fn overlay_mask_without(exts: &[&str]) -> u32 {
+        exts.iter().fold(default_overlay_exts_mask(), |mask, ext| {
+            let i = EXTENSIONS
+                .iter()
+                .position(|e| e == ext)
+                .expect("registered ext");
+            mask & !(1u32 << i)
+        })
+    }
+
+    #[test]
+    fn overlay_exts_are_stored_by_name() {
+        let scratch = ScratchSubkey::new("overlayexts");
+        let original = Settings {
+            overlay_exts_mask: overlay_mask_without(&[".mobi", ".azw"]),
+            ..Settings::default()
+        };
+        original.save_to_subkey(scratch.path()).unwrap();
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey(scratch.path()).unwrap();
+        let stored: String = key.get_value(OVERLAY_DISABLED_EXTS_VALUE).unwrap();
+        assert_eq!(stored, ".mobi,.azw");
+    }
+
+    #[test]
+    fn overlay_exts_round_trip_every_single_toggle() {
+        for ext in EXTENSIONS {
+            let scratch = ScratchSubkey::new("overlaybit");
+            let original = Settings {
+                overlay_exts_mask: overlay_mask_without(&[ext]),
+                ..Settings::default()
+            };
+            original.save_to_subkey(scratch.path()).unwrap();
+            let loaded = Settings::load_from_subkey(scratch.path());
+            assert_eq!(
+                loaded.overlay_exts_mask, original.overlay_exts_mask,
+                "{ext} round-trip"
+            );
+            assert!(!loaded.overlay_allowed_for(ext), "{ext} is off");
+        }
+    }
+
+    #[test]
+    fn overlay_exts_missing_value_keeps_every_extension_on() {
+        // An install that predates the value has only the two global
+        // toggles; reading it must not switch any extension off.
+        let scratch = ScratchSubkey::new("overlaymissing");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        key.set_value("OverlayLabel", &1u32).unwrap();
+        let loaded = Settings::load_from_subkey(scratch.path());
+        assert!(loaded.overlay_label);
+        assert_eq!(loaded.overlay_exts_mask, default_overlay_exts_mask());
+    }
+
+    #[test]
+    fn overlay_exts_list_ignores_case_blanks_and_unknown_names() {
+        assert_eq!(
+            mask_from_disabled_names(EXTENSIONS, " .MOBI, ,.pdf,.azw "),
+            overlay_mask_without(&[".mobi", ".azw"])
+        );
+        assert_eq!(
+            mask_from_disabled_names(EXTENSIONS, ""),
+            default_overlay_exts_mask()
+        );
+    }
+
+    #[test]
+    fn overlay_allowed_for_follows_the_mask() {
+        let s = Settings {
+            overlay_exts_mask: overlay_mask_without(&[".mobi"]),
+            ..Settings::default()
+        };
+        assert!(!s.overlay_allowed_for(".mobi"));
+        assert!(!s.overlay_allowed_for(".MOBI"));
+        assert!(s.overlay_allowed_for(".azw"));
+        assert!(s.overlay_allowed_for(".zip"));
+        // No toggle exists for an extension ArcThumb does not register.
+        assert!(s.overlay_allowed_for(".tar"));
     }
 
     #[test]
@@ -752,21 +1073,253 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_masks_out_of_range_high_bits() {
-        // Simulate a future build that set bits beyond our supported
-        // set. Those must be silently cleared on load so downgrades
-        // don't enable phantom extensions.
+    fn legacy_bitmask_high_bits_cannot_enable_unsupported_formats() {
+        // A legacy mask written by a build with more formats than
+        // this one (or just a junk value) must not light up anything
+        // beyond what we can actually decode.
         let scratch = ScratchSubkey::new("highbits");
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
         let stale: u32 = 0xFFFF_FFFF;
-        key.set_value("EnabledImageExts", &stale).unwrap();
+        key.set_value(LEGACY_ENABLED_IMAGE_EXTS_VALUE, &stale)
+            .unwrap();
 
         let loaded = Settings::load_from_subkey(scratch.path());
         assert_eq!(
             loaded.enabled_image_exts_mask,
             default_enabled_image_exts_mask(),
-            "high bits beyond the supported range must be cleared"
+            "an all-ones legacy mask means nothing was disabled"
+        );
+        assert_eq!(
+            loaded.enabled_image_exts_mask & !default_enabled_image_exts_mask(),
+            0,
+            "no bit outside the supported range may survive"
+        );
+    }
+
+    /// Helper: the mask with exactly `ext` turned off.
+    fn mask_without(ext: &str) -> u32 {
+        default_enabled_image_exts_mask() & !bit_for_ext(ext).expect("supported ext")
+    }
+
+    #[test]
+    fn legacy_image_ext_bits_table_is_frozen() {
+        // This table is the sole interpreter of masks written by
+        // older builds. Editing it silently rewrites what every
+        // existing user's saved settings mean, so changes have to
+        // break a test rather than slip through review.
+        assert_eq!(
+            LEGACY_IMAGE_EXT_BITS,
+            &[
+                ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".ico",
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_bitmask_migrates_by_name() {
+        // Bit 5 was `.tiff` when the bitmask format was in use.
+        // Migration must land on `.tiff` specifically, wherever that
+        // extension sits in today's array.
+        let legacy = default_enabled_image_exts_mask() & !(1u32 << 5);
+        let migrated = mask_from_legacy_bits(legacy);
+        assert_eq!(migrated, mask_without(".tiff"));
+        let legacy_all = (1u32 << LEGACY_IMAGE_EXT_BITS.len()) - 1;
+        for (i, ext) in LEGACY_IMAGE_EXT_BITS.iter().enumerate() {
+            let legacy = legacy_all & !(1u32 << i);
+            assert_eq!(
+                mask_from_legacy_bits(legacy),
+                mask_without(ext),
+                "legacy bit {i} must migrate to {ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_bitmask_enables_formats_it_never_covered() {
+        // An existing user's stored mask only describes the formats
+        // that existed when they saved it. Anything added since is
+        // opt-out, so it comes back enabled.
+        let legacy = (1u32 << LEGACY_IMAGE_EXT_BITS.len()) - 1;
+        let migrated = mask_from_legacy_bits(legacy);
+        assert_eq!(
+            migrated,
+            default_enabled_image_exts_mask(),
+            "a fully-enabled legacy mask must enable newer formats too"
+        );
+        for ext in SUPPORTED_IMAGE_EXTS {
+            if !LEGACY_IMAGE_EXT_BITS.iter().any(|l| l == ext) {
+                let bit = bit_for_ext(ext).unwrap();
+                assert_ne!(migrated & bit, 0, "{ext} postdates the table, must be on");
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_bitmask_migration_runs_through_the_registry() {
+        let scratch = ScratchSubkey::new("legacymigrate");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        // `.webp` was bit 7. Everything else on.
+        let legacy = ((1u32 << LEGACY_IMAGE_EXT_BITS.len()) - 1) & !(1u32 << 7);
+        key.set_value(LEGACY_ENABLED_IMAGE_EXTS_VALUE, &legacy)
+            .unwrap();
+
+        let loaded = Settings::load_from_subkey(scratch.path());
+        assert_eq!(loaded.enabled_image_exts_mask, mask_without(".webp"));
+        assert!(!loaded.accepts_image_ext("cover.webp"));
+        assert!(loaded.accepts_image_ext("cover.jpg"));
+    }
+
+    #[test]
+    fn current_value_wins_over_legacy_bitmask() {
+        // Both present means a new build already saved once. The
+        // bitmask is stale and must be ignored rather than merged.
+        let scratch = ScratchSubkey::new("bothvalues");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        key.set_value(DISABLED_IMAGE_EXTS_VALUE, &".png".to_string())
+            .unwrap();
+        let legacy = default_enabled_image_exts_mask() & !(1u32 << 5);
+        key.set_value(LEGACY_ENABLED_IMAGE_EXTS_VALUE, &legacy)
+            .unwrap();
+
+        let loaded = Settings::load_from_subkey(scratch.path());
+        assert_eq!(loaded.enabled_image_exts_mask, mask_without(".png"));
+    }
+
+    #[test]
+    fn save_deletes_the_legacy_bitmask_value() {
+        let scratch = ScratchSubkey::new("legacydelete");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        key.set_value(LEGACY_ENABLED_IMAGE_EXTS_VALUE, &0u32)
+            .unwrap();
+
+        Settings::default().save_to_subkey(scratch.path()).unwrap();
+
+        let key = hkcu.open_subkey(scratch.path()).unwrap();
+        assert!(
+            key.get_value::<u32, _>(LEGACY_ENABLED_IMAGE_EXTS_VALUE)
+                .is_err(),
+            "the superseded bitmask must be gone after a save"
+        );
+    }
+
+    #[test]
+    fn save_writes_disabled_extensions_by_name() {
+        let scratch = ScratchSubkey::new("bynames");
+        let original = Settings {
+            enabled_image_exts_mask: mask_without(".tiff") & !bit_for_ext(".tif").unwrap(),
+            ..Settings::default()
+        };
+        original.save_to_subkey(scratch.path()).unwrap();
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey(scratch.path()).unwrap();
+        let stored: String = key.get_value(DISABLED_IMAGE_EXTS_VALUE).unwrap();
+        assert_eq!(stored, ".tiff,.tif");
+    }
+
+    #[test]
+    fn save_writes_an_empty_value_when_nothing_is_disabled() {
+        let scratch = ScratchSubkey::new("nonedisabled");
+        Settings::default().save_to_subkey(scratch.path()).unwrap();
+
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey(scratch.path()).unwrap();
+        let stored: String = key.get_value(DISABLED_IMAGE_EXTS_VALUE).unwrap();
+        assert_eq!(stored, "");
+        assert_eq!(
+            Settings::load_from_subkey(scratch.path()).enabled_image_exts_mask,
+            default_enabled_image_exts_mask()
+        );
+    }
+
+    #[test]
+    fn disabled_list_ignores_unrecognised_names() {
+        // What an older ArcThumb sees after a downgrade: names for
+        // formats it cannot decode. It has nothing to clear, so the
+        // formats it does know stay enabled.
+        assert_eq!(
+            mask_from_disabled_list(".avif,.heic,.djvu"),
+            default_enabled_image_exts_mask()
+        );
+        // A mix of known and unknown clears only the known one.
+        assert_eq!(mask_from_disabled_list(".avif,.png"), mask_without(".png"));
+    }
+
+    #[test]
+    fn disabled_list_tolerates_whitespace_case_and_blank_entries() {
+        let expected = mask_without(".tiff") & !bit_for_ext(".tif").unwrap();
+        for input in [
+            ".tiff,.tif",
+            " .tiff , .tif ",
+            ".TIFF,.Tif",
+            ",.tiff,,.tif,",
+            "\t.tiff\n,.tif",
+        ] {
+            assert_eq!(
+                mask_from_disabled_list(input),
+                expected,
+                "input {input:?} must parse to the same mask"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_disabled_list_enables_everything() {
+        for input in ["", " ", ",", ",,", "   ,  "] {
+            assert_eq!(
+                mask_from_disabled_list(input),
+                default_enabled_image_exts_mask(),
+                "input {input:?} disables nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_list_from_mask_round_trips_every_subset_shape() {
+        // All on, all off, and each single extension off.
+        let all = default_enabled_image_exts_mask();
+        assert_eq!(disabled_list_from_mask(all), "");
+        assert_eq!(mask_from_disabled_list(&disabled_list_from_mask(0)), 0);
+        for (i, ext) in SUPPORTED_IMAGE_EXTS.iter().enumerate() {
+            let mask = all & !(1u32 << i);
+            let rendered = disabled_list_from_mask(mask);
+            assert_eq!(rendered, *ext, "single-extension list for {ext}");
+            assert_eq!(mask_from_disabled_list(&rendered), mask);
+        }
+    }
+
+    #[test]
+    fn load_without_any_image_ext_value_enables_everything() {
+        // The subkey exists (other settings were saved) but no
+        // image-extension value was ever written.
+        let scratch = ScratchSubkey::new("noimageval");
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _) = hkcu.create_subkey(scratch.path()).unwrap();
+        key.set_value("SortOrder", &"alphabetical").unwrap();
+
+        let loaded = Settings::load_from_subkey(scratch.path());
+        assert_eq!(loaded.sort_order, SortOrder::Alphabetical);
+        assert_eq!(
+            loaded.enabled_image_exts_mask,
+            default_enabled_image_exts_mask()
+        );
+    }
+
+    #[test]
+    fn bit_for_ext_resolves_case_insensitively_and_rejects_unknowns() {
+        for ext in SUPPORTED_IMAGE_EXTS {
+            assert!(bit_for_ext(ext).is_some(), "{ext} must resolve");
+            assert_eq!(bit_for_ext(&ext.to_uppercase()), bit_for_ext(ext));
+        }
+        assert!(bit_for_ext(".avif").is_none());
+        assert!(bit_for_ext("").is_none());
+        assert!(
+            bit_for_ext("jpg").is_none(),
+            "the leading dot is part of the name"
         );
     }
 

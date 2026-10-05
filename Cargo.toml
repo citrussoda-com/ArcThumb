@@ -18,13 +18,23 @@ name = "arcthumb-config"
 path = "src/bin/arcthumb-config/main.rs"
 
 [features]
-default = []
-# JPEG XL decoding via the pure-Rust jxl-oxide crate.
-# Disabled by default because it adds ~2.3 MB to the DLL
-# (jxl-oxide pulls in rayon, tracing, brotli-decompressor, etc.)
-# for a format that is not yet widely deployed.
-# Enable with: cargo build --release --features jxl
-jxl = ["dep:jxl-oxide"]
+default = ["jxl"]
+# JPEG XL decoding via jxl-rs (the `jxl` crate), the pure-Rust
+# decoder that Chrome and Firefox both ship. Reaches the `image`
+# crate through `jxl-image-rs-integration`.
+#
+# On by default. It costs ~2.3 MB of DLL (2.62 -> 4.96 MB), which is
+# the price of shipping one build that handles .jxl without making
+# the user pick an installer variant.
+#
+# `jxl_simd` picks its code path at runtime with
+# `is_x86_feature_detected!`, so these flags only decide what gets
+# compiled in. We take sse42 + avx and skip avx512, which costs
+# another ~435 KB and is fused off on consumer Intel chips from 12th
+# gen onward.
+#
+# Build without it with: cargo build --release --no-default-features
+jxl = ["dep:jxl-image-rs-integration"]
 
 [dependencies]
 windows-core = "0.62"
@@ -36,6 +46,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
+    "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_Shell_PropertiesSystem",
@@ -51,10 +62,10 @@ tar = "0.4"
 # Streaming XML parser used by the ebook backends (EPUB, FB2). Pure
 # Rust, no allocator surprises, used by widely-deployed crates like
 # `zip` and `sevenz-rust` already so it pulls no new dependencies.
-quick-xml = "0.40"
+quick-xml = "0.42"
 # Used by the FB2 backend to decode the base64-encoded images that
 # FictionBook embeds inline in the document. Pure Rust, ~25 KB.
-base64 = "0.22"
+base64 = "0.23"
 # Pure-Rust parser for the Amazon Kindle MOBI / AZW / AZW3 (KF8)
 # container format. We only need cover-image extraction; the heavy
 # parts of the crate (HTML rendering, dictionary lookup) aren't on
@@ -70,7 +81,10 @@ image = { version = "0.25", default-features = false, features = [
 # compiled. Only used for large-JPEG sources; other formats skip
 # this decoder entirely.
 jpeg-decoder = "0.3"
-jxl-oxide = { version = "0.12", features = ["image"], optional = true }
+jxl-image-rs-integration = { version = "0.7", optional = true, default-features = false, features = [
+    "sse42",
+    "avx",
+] }
 # Pure-Rust glyph rasteriser for the identification-label overlay
 # baked into thumbnails. We embed a tiny A–Z/0–9 subset of Roboto
 # Bold (see assets/fonts/) so labels stay crisp at every Explorer

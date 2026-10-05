@@ -23,9 +23,12 @@
 ;     enterprise lockdowns) because that Explorer ignores HKCU CLSIDs
 ;     by Microsoft's design.
 ;
-; Post-install: silently calls `arcthumb-config.exe --install`. The
-; helper detects its own elevation and writes to the matching hive,
-; so install dir and registry hive stay aligned in every mode above.
+; Post-install: silently calls `arcthumb-config.exe --install` from
+; [Code] so its exit code can be checked; a failed registration is
+; reported instead of ending in a setup that looks successful. The
+; install mode is passed as `--scope user|machine`, so install dir and
+; registry hive stay aligned in every mode above, including setup
+; started elevated and then told to install for the current user only.
 ; The Finish page offers a checkbox to launch the configuration GUI.
 ;
 ; Pre-uninstall: silently calls `arcthumb-config.exe --uninstall`,
@@ -96,14 +99,6 @@ Name: "{autoprograms}\{#MyAppName} Configuration"; Filename: "{app}\{#MyAppExeNa
 Name: "{autoprograms}\Uninstall {#MyAppName}";     Filename: "{uninstallexe}"
 
 [Run]
-; Register the shell extension. arcthumb-config picks the hive based
-; on its own elevation (HKLM when admin, HKCU otherwise), which
-; matches the install mode chosen above. The DLL was just placed in
-; {app} so `--install` finds it via `current_exe()`'s neighbour.
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--install"; \
-    StatusMsg: "Registering shell extension..."; \
-    Flags: runhidden waituntilterminated
-
 ; Finish-page checkbox. Launches the GUI if the user wants it.
 Filename: "{app}\{#MyAppExeName}"; \
     Description: "Launch {#MyAppName} Configuration"; \
@@ -117,6 +112,38 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall"; \
     RunOnceId: "ArcThumbUnregister"; \
     Flags: runhidden waituntilterminated
 
-[UninstallDelete]
-; Make sure the install dir disappears even if log files etc. exist.
-Type: filesandordirs; Name: "{app}"
+[Code]
+// Register the shell extension into the hive that matches the install
+// mode chosen above (HKLM for all users, HKCU for the current user).
+// The DLL was just placed in {app} so `--install` finds it via
+// `current_exe()`'s neighbour.
+//
+// This lives here instead of in [Run] because [Run] ignores exit
+// codes. The exit codes are documented in src/bin/arcthumb-config/cli.rs.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+  Started: Boolean;
+  Params: String;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  if IsAdminInstallMode then
+    Params := '--install --scope machine'
+  else
+    Params := '--install --scope user';
+  WizardForm.StatusLabel.Caption := 'Registering shell extension...';
+  Started := Exec(ExpandConstant('{app}\{#MyAppExeName}'), Params, '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if Started and (ResultCode = 0) then
+    Exit;
+  if not Started then
+    Log('arcthumb-config --install could not be started: ' + SysErrorMessage(ResultCode))
+  else
+    Log(Format('arcthumb-config --install exited with code %d', [ResultCode]));
+  SuppressibleMsgBox(
+    'ArcThumb was copied, but registering the shell extension failed (code ' +
+    IntToStr(ResultCode) + '). Thumbnails will not appear until it is registered.' + #13#10 + #13#10 +
+    'Run "' + ExpandConstant('{app}\{#MyAppExeName}') + ' ' + Params + '" from a command prompt to try again.',
+    mbError, MB_OK, IDOK);
+end;
