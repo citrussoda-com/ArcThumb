@@ -11,10 +11,22 @@
 //                     three-button MessageBox.
 //   * DonationDialog — "thanks for updating" prompt with a
 //                     "Don't show again" checkbox.
+//   * Texts         — global holding the strings the Rust side shows
+//                     outside Slint (native MessageBox prompts) plus
+//                     the locale-specific support URL.
 //
-// All user-visible strings come from the Rust side via `in` properties
-// rather than `@tr("...")`. A future refactor may switch to gettext
-// once the build toolchain is wired up.
+// Translations
+//
+// Every user-visible string is written in English inside `@tr("...")`.
+// `build.rs` bundles the `.po` files under `lang/<tag>/LC_MESSAGES/`
+// into the binary, and `locale.rs` picks the language at startup with
+// `slint::select_bundled_translation`. To add a language, see the
+// "Translating" section of README.md; no Rust changes are needed
+// beyond the native-name table in `locale.rs`.
+//
+// The `.pot` template in `lang/` is regenerated from this file with
+// `slint-tr-extractor` (see README.md), so keep strings in `@tr()`
+// rather than building them from fragments.
 
 import {
     AboutSlint,
@@ -35,6 +47,43 @@ import {
 export struct ExtensionEntry {
     name: string,
     enabled: bool,
+}
+
+// Strings the Rust side needs as plain text: titles and bodies of the
+// native MessageBox prompts (which are not Slint widgets), the label
+// for the "Automatic" entry of the language dropdown (the dropdown
+// model is assembled in Rust because the other entries come from the
+// bundled language list), and the support URL, which is translated
+// so each language lands on its own page.
+export global Texts {
+    // Title of every MessageBox this tool shows.
+    out property <string> app_title: @tr("ArcThumb");
+    out property <string> language_auto: @tr("Automatic (follow Windows)");
+
+    out property <string> regen_confirm: @tr("This will close all Explorer windows, delete the Windows thumbnail and icon caches, and restart Explorer.\n\nUse this if archive thumbnails are still missing after installing or enabling new file types, or to apply a change to the identification overlay.\n\nContinue?");
+    out property <string> regen_done: @tr("Thumbnail cache cleared and Explorer restarted.\n\nNew thumbnails will be generated as you browse.");
+    out property <string> regen_partial: @tr("Some cache files were locked and could not be deleted. Try closing other applications and run this again.");
+
+    out property <string> error_save: @tr("Failed to save settings to the registry.");
+    out property <string> error_register: @tr("Failed to update shell extension registration.");
+    out property <string> error_elevation_declined: @tr("ArcThumb is installed for all users, so changing the enabled extensions or the preview pane needs administrator rights.\n\nThose two settings were not changed.");
+
+    // Manual "check for updates", triggered from the Help menu.
+    out property <string> update_check_title: @tr("Check for updates");
+    out property <string> update_check_failed: @tr("Could not check for updates. Check your internet connection and try again.");
+    pure public function update_up_to_date(version: string) -> string {
+        return @tr("You're on the latest version (v{}).", version);
+    }
+
+    // The support page opened from Help → Support and from the
+    // post-update prompt. This is the only donation URL baked into
+    // the binary — the platform links (GitHub Sponsors, Buy Me a
+    // Coffee) live on that page, so they can change without an app
+    // rebuild. (The comment line right above a `@tr` is copied into
+    // the .pot as a note for translators.)
+    //
+    // Translators: the support page in your language, or leave as is.
+    out property <string> support_url: @tr("https://citrussoda.com/en/arcthumb/sponsor");
 }
 
 // Body of one tab: a scrollable column that keeps its children at
@@ -70,40 +119,11 @@ export component MainWindow inherits Window {
     min-width: 500px;
     min-height: 300px;
 
-    // ---- Localized labels (set from Rust at startup) -------------
-    in property <string> window_title;
-    in property <string> menu_file;
-    in property <string> menu_file_exit;
-    in property <string> menu_help;
-    in property <string> menu_help_check_updates;
-    in property <string> menu_help_donate;
-    in property <string> menu_help_about;
-    in property <string> tab_files;
-    in property <string> tab_thumbnail;
-    in property <string> tab_display;
-    in property <string> group_extensions;
-    in property <string> group_image_exts;
-    in property <string> group_sort;
-    in property <string> sort_natural_label;
-    in property <string> sort_alpha_label;
-    in property <string> group_cover;
-    in property <string> cover_prefer_label;
-    in property <string> cover_only_label;
-    in property <string> cover_ignore_label;
-    in property <string> group_overlay;
-    in property <string> regen_hint;
-    in property <string> group_preview;
-    in property <string> enable_preview_label;
-    in property <string> group_language;
-    in property <string> language_auto_label;
-    in property <string> language_hint;
-    in property <string> overlay_border_label;
-    in property <string> overlay_label_label;
-    in property <string> overlay_exts_caption;
-    in property <string> btn_ok;
-    in property <string> btn_cancel;
-    in property <string> btn_apply;
-    in property <string> btn_regenerate;
+    // Exposed as a property (rather than written straight into
+    // `title`) so the Rust tests can read it back and check that the
+    // bundled translation actually switched.
+
+    out property <string> window_title: @tr("ArcThumb Configuration");
 
     // ---- Two-way bindable state ---------------------------------
     // The per-extension toggle list. Driven from Rust via a
@@ -127,9 +147,15 @@ export component MainWindow inherits Window {
     in-out property <bool> enable_preview;
     in-out property <bool> overlay_border;
     in-out property <bool> overlay_label;
-    // UI language, as an index into the dropdown: 0 = follow Windows,
-    // 1 = English, 2 = Japanese. Mapped to `locale::LanguageChoice` on
-    // the Rust side.
+    // Entries of the language dropdown: `Texts.language_auto` first,
+    // then every language in `locale::LANGUAGES`, each shown in its
+    // own language so it can be found from any UI language. Built on
+    // the Rust side because the list depends on which `.po` files
+    // were bundled at build time.
+    in property <[string]> language_names;
+    // UI language, as an index into `language_names`: 0 = follow
+    // Windows, otherwise `locale::LANGUAGES[index - 1]`. Mapped to
+    // `locale::LanguageChoice` on the Rust side.
     in-out property <int> language_index;
 
     // ---- Callbacks ----------------------------------------------
@@ -152,24 +178,24 @@ export component MainWindow inherits Window {
 
     MenuBar {
         Menu {
-            title: root.menu_file;
+            title: @tr("File");
             MenuItem {
-                title: root.menu_file_exit;
+                title: @tr("Exit");
                 activated => { root.exit_clicked(); }
             }
         }
         Menu {
-            title: root.menu_help;
+            title: @tr("Help");
             MenuItem {
-                title: root.menu_help_check_updates;
+                title: @tr("Check for updates");
                 activated => { root.check_updates_clicked(); }
             }
             MenuItem {
-                title: root.menu_help_donate;
+                title: @tr("Support ArcThumb");
                 activated => { root.donate_clicked(); }
             }
             MenuItem {
-                title: root.menu_help_about;
+                title: @tr("About ArcThumb");
                 activated => { root.about_clicked(); }
             }
         }
@@ -198,11 +224,11 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
 
             Tab {
-                title: root.tab_files;
+                title: @tr("Files");
                 TabPage {
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_extensions;
+                        title: @tr("Enabled extensions");
                         // 6 columns wide, row-major. We compute the row/col
                         // from the iteration index `i` so the layout follows
                         // `arcthumb::registry::EXTENSIONS` order automatically.
@@ -225,7 +251,7 @@ export component MainWindow inherits Window {
 
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_image_exts;
+                        title: @tr("Image formats used for thumbnails (inside archives)");
                         GridLayout {
                             spacing: 8px;
                             for entry[i] in root.image_extensions: CheckBox {
@@ -244,14 +270,17 @@ export component MainWindow inherits Window {
             }
 
             Tab {
-                title: root.tab_thumbnail;
+                title: @tr("Thumbnail");
                 TabPage {
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_sort;
+                        title: @tr("Sort order");
                         ComboBox {
                             vertical-stretch: 0;
-                            model: [root.sort_natural_label, root.sort_alpha_label];
+                            model: [
+                                @tr("Natural (page2 < page10)"),
+                                @tr("Alphabetical"),
+                            ];
                             // Two-way (`<=>`) is required, not a one-way binding:
                             // the ComboBox writes current-index internally at
                             // init, which severs a one-way binding and leaves the
@@ -262,13 +291,13 @@ export component MainWindow inherits Window {
 
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_cover;
+                        title: @tr("Cover image (cover / folder / thumb / thumbnail / front)");
                         ComboBox {
                             vertical-stretch: 0;
                             model: [
-                                root.cover_prefer_label,
-                                root.cover_only_label,
-                                root.cover_ignore_label,
+                                @tr("Use cover if present, else first page"),
+                                @tr("Cover only (no thumbnail otherwise)"),
+                                @tr("Always use first page"),
                             ];
                             // Two-way (`<=>`) is required — see the sort
                             // ComboBox above for why a one-way binding breaks.
@@ -276,31 +305,31 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    RegenHint { text: root.regen_hint; }
+                    RegenHint { text: @tr("To apply a change here to thumbnails that already exist, use Regenerate thumbnails."); }
                 }
             }
 
             Tab {
-                title: root.tab_display;
+                title: @tr("Display");
                 TabPage {
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_overlay;
+                        title: @tr("Identification overlay");
                         VerticalLayout {
                             spacing: 6px;
                             CheckBox {
                                 vertical-stretch: 0;
-                                text: root.overlay_border_label;
+                                text: @tr("Mark archives with a coloured border");
                                 checked <=> root.overlay_border;
                             }
                             CheckBox {
                                 vertical-stretch: 0;
-                                text: root.overlay_label_label;
+                                text: @tr("Mark archives with a format label (CBZ, EPUB, ...)");
                                 checked <=> root.overlay_label;
                             }
                             Text {
                                 vertical-stretch: 0;
-                                text: root.overlay_exts_caption;
+                                text: @tr("Show the overlay on these file types:");
                             }
                             // Same grid as the Files tab. Greyed out
                             // while both cues above are off, since the
@@ -322,34 +351,31 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    RegenHint { text: root.regen_hint; }
+                    RegenHint { text: @tr("To apply a change here to thumbnails that already exist, use Regenerate thumbnails."); }
 
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_preview;
+                        title: @tr("Preview pane");
                         CheckBox {
                             vertical-stretch: 0;
-                            text: root.enable_preview_label;
+                            text: @tr("Enable preview pane (Alt+P)");
                             checked <=> root.enable_preview;
                         }
                     }
 
                     GroupBox {
                         vertical-stretch: 0;
-                        title: root.group_language;
+                        title: @tr("Language");
                         VerticalLayout {
                             spacing: 6px;
                             ComboBox {
                                 vertical-stretch: 0;
-                                // The two language names are shown in
-                                // their own language on purpose, so they
-                                // can be found from either UI.
-                                model: [root.language_auto_label, "English", "日本語"];
+                                model: root.language_names;
                                 // Two-way (`<=>`) is required — see the sort
                                 // ComboBox for why a one-way binding breaks.
                                 current-index <=> root.language_index;
                             }
-                            RegenHint { text: root.language_hint; }
+                            RegenHint { text: @tr("A language change shows up the next time you open this window."); }
                         }
                     }
                 }
@@ -360,21 +386,21 @@ export component MainWindow inherits Window {
             vertical-stretch: 0;
             spacing: 6px;
             Button {
-                text: root.btn_regenerate;
+                text: @tr("Regenerate thumbnails");
                 clicked => { root.regenerate_clicked(); }
             }
             Rectangle { horizontal-stretch: 1; }
             Button {
-                text: root.btn_ok;
+                text: @tr("OK");
                 primary: true;
                 clicked => { root.ok_clicked(); }
             }
             Button {
-                text: root.btn_cancel;
+                text: @tr("Cancel");
                 clicked => { root.cancel_clicked(); }
             }
             Button {
-                text: root.btn_apply;
+                text: @tr("Apply");
                 clicked => { root.apply_clicked(); }
             }
         }
@@ -382,15 +408,13 @@ export component MainWindow inherits Window {
 }
 
 export component AboutDialog inherits Window {
-    title: root.dialog_title;
+    title: @tr("About ArcThumb");
     icon: @image-url("../assets/icon.png");
     preferred-width: 460px;
     preferred-height: 460px;
 
-    in property <string> dialog_title;
+    // "ArcThumb 1.2.3", set from Rust. Not translated.
     in property <string> version_text;
-    in property <string> body_text;
-    in property <string> btn_close;
 
     callback close_clicked();
 
@@ -406,7 +430,7 @@ export component AboutDialog inherits Window {
         }
 
         Text {
-            text: root.body_text;
+            text: @tr("ArcThumb — archive thumbnail provider for Windows Explorer.\n\nThis application uses Slint (https://slint.dev) under the Slint Royalty-Free License 2.0.");
             wrap: word-wrap;
             horizontal-alignment: center;
         }
@@ -418,7 +442,7 @@ export component AboutDialog inherits Window {
         HorizontalBox {
             Rectangle { horizontal-stretch: 1; }
             Button {
-                text: root.btn_close;
+                text: @tr("Close");
                 clicked => { root.close_clicked(); }
             }
             Rectangle { horizontal-stretch: 1; }
@@ -427,16 +451,14 @@ export component AboutDialog inherits Window {
 }
 
 export component UpdateDialog inherits Window {
-    title: root.dialog_title;
+    title: @tr("Update available");
     icon: @image-url("../assets/icon.png");
     preferred-width: 440px;
     preferred-height: 220px;
 
-    in property <string> dialog_title;
-    in property <string> message_text;
-    in property <string> skip_checkbox_label;
-    in property <string> btn_open;
-    in property <string> btn_later;
+    // Version numbers without the leading "v"; the message adds it.
+    in property <string> latest_version;
+    in property <string> current_version;
 
     in-out property <bool> skip_checked: false;
 
@@ -448,12 +470,12 @@ export component UpdateDialog inherits Window {
         spacing: 14px;
 
         Text {
-            text: root.message_text;
+            text: @tr("A new version of ArcThumb is available: v{}  (current: v{})", root.latest_version, root.current_version);
             wrap: word-wrap;
         }
 
         CheckBox {
-            text: root.skip_checkbox_label;
+            text: @tr("Skip this version");
             checked <=> root.skip_checked;
         }
 
@@ -463,12 +485,12 @@ export component UpdateDialog inherits Window {
             spacing: 6px;
             Rectangle { horizontal-stretch: 1; }
             Button {
-                text: root.btn_open;
+                text: @tr("Open download page");
                 primary: true;
                 clicked => { root.open_clicked(); }
             }
             Button {
-                text: root.btn_later;
+                text: @tr("Remind me later");
                 clicked => { root.later_clicked(); }
             }
         }
@@ -476,16 +498,13 @@ export component UpdateDialog inherits Window {
 }
 
 export component DonationDialog inherits Window {
-    title: root.dialog_title;
+    title: @tr("Thank you for updating!");
     icon: @image-url("../assets/icon.png");
     preferred-width: 440px;
     preferred-height: 220px;
 
-    in property <string> dialog_title;
-    in property <string> message_text;
-    in property <string> dont_show_label;
-    in property <string> btn_support;
-    in property <string> btn_later;
+    // Version number without the leading "v"; the message adds it.
+    in property <string> version;
 
     in-out property <bool> dont_show_checked: false;
 
@@ -497,12 +516,12 @@ export component DonationDialog inherits Window {
         spacing: 14px;
 
         Text {
-            text: root.message_text;
+            text: @tr("ArcThumb has been updated to v{}.\nWould you like to support development?", root.version);
             wrap: word-wrap;
         }
 
         CheckBox {
-            text: root.dont_show_label;
+            text: @tr("Don't show this again");
             checked <=> root.dont_show_checked;
         }
 
@@ -512,60 +531,26 @@ export component DonationDialog inherits Window {
             spacing: 6px;
             Rectangle { horizontal-stretch: 1; }
             Button {
-                text: root.btn_support;
+                text: @tr("Open support page");
                 primary: true;
                 clicked => { root.support_clicked(); }
             }
             Button {
-                text: root.btn_later;
+                text: @tr("Maybe next time");
                 clicked => { root.later_clicked(); }
             }
         }
     }
 }
 
-// Preview-only wrapper. The production `MainWindow` receives every
-// `in property <string>` from Rust at startup; VS Code's Slint preview
-// and `slint-viewer` have no Rust side, so they render those properties
-// as empty strings and the toggle lists as empty arrays. This component
-// inherits `MainWindow` and assigns plausible Japanese defaults so the
-// preview shows a realistic layout. Not used by the binary — Rust still
-// instantiates `MainWindow` directly, and these defaults are overridden
-// the moment `set_*` is called at startup.
+// Preview-only wrapper. The production `MainWindow` receives its
+// toggle lists and the language dropdown entries from Rust at
+// startup; VS Code's Slint preview and `slint-viewer` have no Rust
+// side, so they would render the grids and the dropdown empty. This
+// component inherits `MainWindow` and assigns plausible defaults so
+// the preview shows a realistic layout. Not used by the binary.
 export component MainWindowPreview inherits MainWindow {
-    window_title: "ArcThumb 設定";
-    menu_file: "ファイル";
-    menu_file_exit: "終了";
-    menu_help: "ヘルプ";
-    menu_help_check_updates: "更新を確認";
-    menu_help_donate: "ArcThumb を支援する";
-    menu_help_about: "ArcThumb について";
-    tab_files: "対象ファイル";
-    tab_thumbnail: "サムネイル";
-    tab_display: "表示";
-    group_extensions: "有効にする拡張子";
-    group_image_exts: "サムネイルに使う画像形式 (アーカイブ内)";
-    group_sort: "並び順";
-    sort_natural_label: "自然順 (page2 < page10)";
-    sort_alpha_label: "アルファベット順";
-    group_cover: "カバー画像 (cover / folder / thumb / thumbnail / front)";
-    cover_prefer_label: "カバーを優先（無ければ先頭ページ）";
-    cover_only_label: "カバーがあるときだけ表示（無ければ通常アイコン）";
-    cover_ignore_label: "常に先頭ページを使う";
-    group_overlay: "識別オーバーレイ";
-    regen_hint: "作成済みのサムネイルに反映するには「サムネイルを再生成」を実行してください。";
-    group_preview: "プレビュー ウィンドウ";
-    enable_preview_label: "プレビュー ウィンドウを有効にする (Alt+P)";
-    group_language: "言語";
-    language_auto_label: "自動 (Windows に合わせる)";
-    language_hint: "言語の変更は、この設定画面を次に開いたときに反映されます。";
-    overlay_border_label: "アーカイブを色付きの枠線で示す";
-    overlay_label_label: "アーカイブにフォーマットラベルを表示 (CBZ, EPUB, ...)";
-    overlay_exts_caption: "オーバーレイを付ける拡張子:";
-    btn_ok: "OK";
-    btn_cancel: "キャンセル";
-    btn_apply: "適用";
-    btn_regenerate: "サムネイルを再生成";
+    language_names: ["Automatic (follow Windows)", "English", "日本語"];
 
     // Dummy toggle rows so the grids actually render. Lengths roughly
     // match the real `registry::EXTENSIONS` and `SUPPORTED_IMAGE_EXTS`

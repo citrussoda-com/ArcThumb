@@ -1,0 +1,273 @@
+# Japanese translation of the ArcThumb configuration GUI.
+#
+# Regenerate the template with the command in README.md ("Translating")
+# and merge new strings in with `msgmerge`, or by hand: an untranslated
+# msgid simply shows up in English.
+msgid ""
+msgstr ""
+"Project-Id-Version: ArcThumb\n"
+"POT-Creation-Date: 2026-10-05 11:55+0000\n"
+"PO-Revision-Date: 2026-10-05 12:00+0900\n"
+"Last-Translator: citrussoda\n"
+"Language-Team: Japanese\n"
+"Language: ja\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#. Title of every MessageBox this tool shows.
+#: ui/main.slint:60
+msgid "ArcThumb"
+msgstr ""
+
+#: ui/main.slint:61
+msgid "Automatic (follow Windows)"
+msgstr "自動 (Windows に合わせる)"
+
+#: ui/main.slint:63
+msgid ""
+"This will close all Explorer windows, delete the Windows thumbnail and icon "
+"caches, and restart Explorer.\n\nUse this if archive thumbnails are still "
+"missing after installing or enabling new file types, or to apply a change to "
+"the identification overlay.\n\nContinue?"
+msgstr ""
+"エクスプローラーのウィンドウをすべて閉じ、Windows のサムネイル/アイコンキャッシュを"
+"削除してエクスプローラーを再起動します。\n\n"
+"インストール後や対応拡張子を有効にしたあとでサムネイルが表示されない場合や、"
+"識別オーバーレイの設定を変更したあとに使ってください。\n\n続行しますか？"
+
+#: ui/main.slint:64
+msgid ""
+"Thumbnail cache cleared and Explorer restarted.\n\nNew thumbnails will be "
+"generated as you browse."
+msgstr ""
+"サムネイルキャッシュを削除し、エクスプローラーを再起動しました。\n\n"
+"フォルダを開くと新しいサムネイルが作成されます。"
+
+#: ui/main.slint:65
+msgid ""
+"Some cache files were locked and could not be deleted. Try closing other "
+"applications and run this again."
+msgstr ""
+"一部のキャッシュファイルがロックされていて削除できませんでした。"
+"他のアプリを閉じてから、もう一度実行してください。"
+
+#: ui/main.slint:67
+msgid "Failed to save settings to the registry."
+msgstr "設定の保存に失敗しました。"
+
+#: ui/main.slint:68
+msgid "Failed to update shell extension registration."
+msgstr "シェル拡張の登録状態の更新に失敗しました。"
+
+#: ui/main.slint:69
+msgid ""
+"ArcThumb is installed for all users, so changing the enabled extensions or "
+"the preview pane needs administrator rights.\n\nThose two settings were not "
+"changed."
+msgstr ""
+"ArcThumb はすべてのユーザー向けにインストールされているため、"
+"有効な拡張子とプレビューウィンドウの変更には管理者権限が必要です。\n\n"
+"この 2 つの設定は変更されませんでした。"
+
+#. Manual "check for updates", triggered from the Help menu.
+#: ui/main.slint:72 ui/main.slint:190
+msgid "Check for updates"
+msgstr "更新を確認"
+
+#: ui/main.slint:73
+msgid ""
+"Could not check for updates. Check your internet connection and try again."
+msgstr ""
+"更新を確認できませんでした。インターネット接続を確認して、もう一度お試しください。"
+
+#: ui/main.slint:75
+msgid "You're on the latest version (v{})."
+msgstr "最新バージョンです (v{})。"
+
+#. Translators: the support page in your language, or leave as is.
+#: ui/main.slint:86
+msgid "https://citrussoda.com/en/arcthumb/sponsor"
+msgstr "https://citrussoda.com/arcthumb/sponsor"
+
+#: ui/main.slint:126
+msgid "ArcThumb Configuration"
+msgstr "ArcThumb 設定"
+
+#: ui/main.slint:181
+msgid "File"
+msgstr "ファイル"
+
+#: ui/main.slint:183
+msgid "Exit"
+msgstr "終了"
+
+#: ui/main.slint:188
+msgid "Help"
+msgstr "ヘルプ"
+
+#: ui/main.slint:194
+msgid "Support ArcThumb"
+msgstr "ArcThumb を支援する"
+
+#: ui/main.slint:198 ui/main.slint:411
+msgid "About ArcThumb"
+msgstr "ArcThumb について"
+
+#: ui/main.slint:227
+msgid "Files"
+msgstr "対象ファイル"
+
+#: ui/main.slint:231
+msgid "Enabled extensions"
+msgstr "有効にする拡張子"
+
+#: ui/main.slint:254
+msgid "Image formats used for thumbnails (inside archives)"
+msgstr "サムネイルに使う画像形式 (アーカイブ内)"
+
+#: ui/main.slint:273
+msgid "Thumbnail"
+msgstr "サムネイル"
+
+#: ui/main.slint:277
+msgid "Sort order"
+msgstr "並び順"
+
+#: ui/main.slint:281
+msgid "Natural (page2 < page10)"
+msgstr "自然順 (page2 < page10)"
+
+#: ui/main.slint:282
+msgid "Alphabetical"
+msgstr "アルファベット順"
+
+#: ui/main.slint:294
+msgid "Cover image (cover / folder / thumb / thumbnail / front)"
+msgstr "カバー画像 (cover / folder / thumb / thumbnail / front)"
+
+#: ui/main.slint:298
+msgid "Use cover if present, else first page"
+msgstr "カバーを優先（無ければ先頭ページ）"
+
+#: ui/main.slint:299
+msgid "Cover only (no thumbnail otherwise)"
+msgstr "カバーがあるときだけ表示（無ければ通常アイコン）"
+
+#: ui/main.slint:300
+msgid "Always use first page"
+msgstr "常に先頭ページを使う"
+
+#: ui/main.slint:308 ui/main.slint:354
+msgid ""
+"To apply a change here to thumbnails that already exist, use Regenerate "
+"thumbnails."
+msgstr "作成済みのサムネイルに反映するには「サムネイルを再生成」を実行してください。"
+
+#: ui/main.slint:313
+msgid "Display"
+msgstr "表示"
+
+#: ui/main.slint:317
+msgid "Identification overlay"
+msgstr "識別オーバーレイ"
+
+#: ui/main.slint:322
+msgid "Mark archives with a coloured border"
+msgstr "アーカイブを色付きの枠線で示す"
+
+#: ui/main.slint:327
+msgid "Mark archives with a format label (CBZ, EPUB, ...)"
+msgstr "アーカイブにフォーマットラベルを表示 (CBZ, EPUB, ...)"
+
+#: ui/main.slint:332
+msgid "Show the overlay on these file types:"
+msgstr "オーバーレイを付ける拡張子:"
+
+#: ui/main.slint:358
+msgid "Preview pane"
+msgstr "プレビュー ウィンドウ"
+
+#: ui/main.slint:361
+msgid "Enable preview pane (Alt+P)"
+msgstr "プレビュー ウィンドウを有効にする (Alt+P)"
+
+#: ui/main.slint:368
+msgid "Language"
+msgstr "言語"
+
+#: ui/main.slint:378
+msgid "A language change shows up the next time you open this window."
+msgstr "言語の変更は、この設定画面を次に開いたときに反映されます。"
+
+#: ui/main.slint:389
+msgid "Regenerate thumbnails"
+msgstr "サムネイルを再生成"
+
+#: ui/main.slint:394
+msgid "OK"
+msgstr ""
+
+#: ui/main.slint:399
+msgid "Cancel"
+msgstr "キャンセル"
+
+#: ui/main.slint:403
+msgid "Apply"
+msgstr "適用"
+
+#: ui/main.slint:433
+msgid ""
+"ArcThumb — archive thumbnail provider for Windows Explorer.\n\nThis "
+"application uses Slint (https://slint.dev) under the Slint Royalty-Free "
+"License 2.0."
+msgstr ""
+"ArcThumb — Windows エクスプローラー向けのアーカイブサムネイル プロバイダー。\n\n"
+"このアプリケーションは Slint (https://slint.dev) を "
+"Slint Royalty-Free License 2.0 に基づいて使用しています。"
+
+#: ui/main.slint:445
+msgid "Close"
+msgstr "閉じる"
+
+#: ui/main.slint:454
+msgid "Update available"
+msgstr "アップデート通知"
+
+#: ui/main.slint:473
+msgid "A new version of ArcThumb is available: v{}  (current: v{})"
+msgstr "ArcThumb の新しいバージョンがあります: v{}  (現在: v{})"
+
+#: ui/main.slint:478
+msgid "Skip this version"
+msgstr "このバージョンをスキップ"
+
+#: ui/main.slint:488
+msgid "Open download page"
+msgstr "ダウンロードページを開く"
+
+#: ui/main.slint:493
+msgid "Remind me later"
+msgstr "あとで通知"
+
+#: ui/main.slint:501
+msgid "Thank you for updating!"
+msgstr "アップデートありがとうございます！"
+
+#: ui/main.slint:519
+msgid ""
+"ArcThumb has been updated to v{}.\nWould you like to support development?"
+msgstr "ArcThumb v{} にアップデートされました。\n開発を支援しますか？"
+
+#: ui/main.slint:524
+msgid "Don't show this again"
+msgstr "今後表示しない"
+
+#: ui/main.slint:534
+msgid "Open support page"
+msgstr "支援ページを開く"
+
+#: ui/main.slint:539
+msgid "Maybe next time"
+msgstr "また今度"

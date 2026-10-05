@@ -1,0 +1,254 @@
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: ArcThumb VERSION\n"
+"POT-Creation-Date: 2026-10-05 12:04+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: \n"
+
+#. Title of every MessageBox this tool shows.
+#: ui/main.slint:60
+msgid "ArcThumb"
+msgstr ""
+
+#: ui/main.slint:61
+msgid "Automatic (follow Windows)"
+msgstr ""
+
+#: ui/main.slint:63
+msgid ""
+"This will close all Explorer windows, delete the Windows thumbnail and icon "
+"caches, and restart Explorer.\n\nUse this if archive thumbnails are still "
+"missing after installing or enabling new file types, or to apply a change to "
+"the identification overlay.\n\nContinue?"
+msgstr ""
+
+#: ui/main.slint:64
+msgid ""
+"Thumbnail cache cleared and Explorer restarted.\n\nNew thumbnails will be "
+"generated as you browse."
+msgstr ""
+
+#: ui/main.slint:65
+msgid ""
+"Some cache files were locked and could not be deleted. Try closing other "
+"applications and run this again."
+msgstr ""
+
+#: ui/main.slint:67
+msgid "Failed to save settings to the registry."
+msgstr ""
+
+#: ui/main.slint:68
+msgid "Failed to update shell extension registration."
+msgstr ""
+
+#: ui/main.slint:69
+msgid ""
+"ArcThumb is installed for all users, so changing the enabled extensions or "
+"the preview pane needs administrator rights.\n\nThose two settings were not "
+"changed."
+msgstr ""
+
+#. Manual "check for updates", triggered from the Help menu.
+#: ui/main.slint:72 ui/main.slint:190
+msgid "Check for updates"
+msgstr ""
+
+#: ui/main.slint:73
+msgid ""
+"Could not check for updates. Check your internet connection and try again."
+msgstr ""
+
+#: ui/main.slint:75
+msgid "You're on the latest version (v{})."
+msgstr ""
+
+#. Translators: the support page in your language, or leave as is.
+#: ui/main.slint:86
+msgid "https://citrussoda.com/en/arcthumb/sponsor"
+msgstr ""
+
+#: ui/main.slint:126
+msgid "ArcThumb Configuration"
+msgstr ""
+
+#: ui/main.slint:181
+msgid "File"
+msgstr ""
+
+#: ui/main.slint:183
+msgid "Exit"
+msgstr ""
+
+#: ui/main.slint:188
+msgid "Help"
+msgstr ""
+
+#: ui/main.slint:194
+msgid "Support ArcThumb"
+msgstr ""
+
+#: ui/main.slint:198 ui/main.slint:411
+msgid "About ArcThumb"
+msgstr ""
+
+#: ui/main.slint:227
+msgid "Files"
+msgstr ""
+
+#: ui/main.slint:231
+msgid "Enabled extensions"
+msgstr ""
+
+#: ui/main.slint:254
+msgid "Image formats used for thumbnails (inside archives)"
+msgstr ""
+
+#: ui/main.slint:273
+msgid "Thumbnail"
+msgstr ""
+
+#: ui/main.slint:277
+msgid "Sort order"
+msgstr ""
+
+#: ui/main.slint:281
+msgid "Natural (page2 < page10)"
+msgstr ""
+
+#: ui/main.slint:282
+msgid "Alphabetical"
+msgstr ""
+
+#: ui/main.slint:294
+msgid "Cover image (cover / folder / thumb / thumbnail / front)"
+msgstr ""
+
+#: ui/main.slint:298
+msgid "Use cover if present, else first page"
+msgstr ""
+
+#: ui/main.slint:299
+msgid "Cover only (no thumbnail otherwise)"
+msgstr ""
+
+#: ui/main.slint:300
+msgid "Always use first page"
+msgstr ""
+
+#: ui/main.slint:308 ui/main.slint:354
+msgid ""
+"To apply a change here to thumbnails that already exist, use Regenerate "
+"thumbnails."
+msgstr ""
+
+#: ui/main.slint:313
+msgid "Display"
+msgstr ""
+
+#: ui/main.slint:317
+msgid "Identification overlay"
+msgstr ""
+
+#: ui/main.slint:322
+msgid "Mark archives with a coloured border"
+msgstr ""
+
+#: ui/main.slint:327
+msgid "Mark archives with a format label (CBZ, EPUB, ...)"
+msgstr ""
+
+#: ui/main.slint:332
+msgid "Show the overlay on these file types:"
+msgstr ""
+
+#: ui/main.slint:358
+msgid "Preview pane"
+msgstr ""
+
+#: ui/main.slint:361
+msgid "Enable preview pane (Alt+P)"
+msgstr ""
+
+#: ui/main.slint:368
+msgid "Language"
+msgstr ""
+
+#: ui/main.slint:378
+msgid "A language change shows up the next time you open this window."
+msgstr ""
+
+#: ui/main.slint:389
+msgid "Regenerate thumbnails"
+msgstr ""
+
+#: ui/main.slint:394
+msgid "OK"
+msgstr ""
+
+#: ui/main.slint:399
+msgid "Cancel"
+msgstr ""
+
+#: ui/main.slint:403
+msgid "Apply"
+msgstr ""
+
+#: ui/main.slint:433
+msgid ""
+"ArcThumb — archive thumbnail provider for Windows Explorer.\n\nThis "
+"application uses Slint (https://slint.dev) under the Slint Royalty-Free "
+"License 2.0."
+msgstr ""
+
+#: ui/main.slint:445
+msgid "Close"
+msgstr ""
+
+#: ui/main.slint:454
+msgid "Update available"
+msgstr ""
+
+#: ui/main.slint:473
+msgid "A new version of ArcThumb is available: v{}  (current: v{})"
+msgstr ""
+
+#: ui/main.slint:478
+msgid "Skip this version"
+msgstr ""
+
+#: ui/main.slint:488
+msgid "Open download page"
+msgstr ""
+
+#: ui/main.slint:493
+msgid "Remind me later"
+msgstr ""
+
+#: ui/main.slint:501
+msgid "Thank you for updating!"
+msgstr ""
+
+#: ui/main.slint:519
+msgid ""
+"ArcThumb has been updated to v{}.\nWould you like to support development?"
+msgstr ""
+
+#: ui/main.slint:524
+msgid "Don't show this again"
+msgstr ""
+
+#: ui/main.slint:534
+msgid "Open support page"
+msgstr ""
+
+#: ui/main.slint:539
+msgid "Maybe next time"
+msgstr ""

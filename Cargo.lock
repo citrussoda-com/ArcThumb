@@ -147,6 +147,7 @@ dependencies = [
  "jxl-image-rs-integration",
  "mobi",
  "quick-xml 0.42.0",
+ "rspolib",
  "sevenz-rust",
  "slint",
  "slint-build",
