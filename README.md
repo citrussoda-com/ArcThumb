@@ -71,7 +71,7 @@ Open **ArcThumb Configuration** from the Start menu.
 - **Mark archives with a coloured border** draws a frame around the thumbnail, coloured by format family (one colour for compressed archives, another for ebooks). It makes an archive cover easy to tell apart from a plain image.
 - **Mark archives with a format label** bakes a small `CBZ` / `EPUB` / … tag into the bottom-right corner. The label uses the file's extension when ArcThumb can read it and otherwise falls back to the detected format, so a `.cbz` reads "CBZ" but a renamed archive still gets a sensible tag. The label is dropped on very small icons where it would be unreadable; the border stays.
 - **Show the overlay on these file types** picks which extensions get the border and label. Every extension is ticked by default. Untick one to leave its thumbnails bare, for example `.mobi` and `.azw` when another app already puts its own badge on them. The list only narrows the two options above and is greyed out while both are off.
-- **Language** is Automatic, English or Japanese. Automatic follows the Windows display language. Picking one stores it in `HKCU\Software\ArcThumb\Language`, and the change shows up the next time the window is opened.
+- **Language** lists Automatic plus every language ArcThumb ships with (English and Japanese so far; see [Translating](#translating) to add one). Automatic follows the Windows display language. Picking one stores its tag (for example `ja`) in `HKCU\Software\ArcThumb\Language`, and the change shows up the next time the window is opened.
 
 Both overlay options are off by default. The plain cover thumbnails shown at the top of this page are what you get out of the box; turning the overlay on changes how every archive thumbnail looks:
 
@@ -187,6 +187,34 @@ To disable the update check entirely:
 ```powershell
 Set-ItemProperty -Path 'HKCU:\Software\ArcThumb' -Name 'UpdateCheckEnabled' -Value 0 -Type DWord
 ```
+
+### Translating
+
+The config GUI's strings are plain English `@tr("...")` literals in `ui/main.slint`. Translations are gettext `.po` files under `lang/`, compiled into `arcthumb-config.exe` at build time by `build.rs`, so a translation needs no code and no extra tools to build. Slint's own gettext backend does not work on Windows, which is why the catalogs are bundled instead of loaded at runtime.
+
+```
+lang/
+  arcthumb.pot                 template with every string
+  ja/LC_MESSAGES/arcthumb.po   Japanese
+```
+
+To add a language:
+
+1. Copy `lang/arcthumb.pot` to `lang/<tag>/LC_MESSAGES/arcthumb.po`, where `<tag>` is the language part of a BCP 47 tag (`fr`, `de`, `zh`). Fill in the header's `Language:` line and the `msgstr` entries. Any editor works; [Poedit](https://poedit.net/) is a comfortable one. Keep `{}` placeholders as they are.
+2. Add the language's name in its own language to `NATIVE_NAMES` in `src/bin/arcthumb-config/locale.rs`. That is what the dropdown shows. `cargo test` fails with a pointer to this table if it is missing.
+3. `cargo build` and open `arcthumb-config.exe`. The new language appears in the dropdown and is picked automatically when it matches the Windows display language.
+
+An entry left with an empty `msgstr` shows the English text, so a partial translation is fine to ship. Entries marked `fuzzy` are treated as untranslated.
+
+After changing strings in `main.slint`, regenerate the template and merge it into the existing catalogs (`msgmerge` is part of gettext; on Windows, `winget install gettext` or Poedit's "Update from POT"):
+
+```powershell
+cargo install slint-tr-extractor --locked
+slint-tr-extractor -d arcthumb --package-name ArcThumb --no-default-translation-context -o lang/arcthumb.pot ui/main.slint
+msgmerge --update lang/ja/LC_MESSAGES/arcthumb.po lang/arcthumb.pot
+```
+
+`--no-default-translation-context` matches the `DefaultTranslationContext::None` setting in `build.rs`; without it the catalogs would need a `msgctxt` on every entry.
 
 ### Regenerating the icon
 

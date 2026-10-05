@@ -15,13 +15,13 @@
 //!
 //! Phase 2 of the refactor pulled this function out of `ui.rs`
 //! alongside the Slint sub-dialogs so each concern has its own
-//! short file. The behaviour is unchanged — `start_update_check`
-//! is byte-identical to the version that used to live in `ui.rs`,
-//! it just imports `show_update_dialog` from its new home.
+//! short file.
+
+use slint::{ComponentHandle, Weak};
 
 use crate::dialogs;
-use crate::locale::Strings;
 use crate::message_box;
+use crate::ui::{MainWindow, Texts};
 use crate::update;
 
 /// Kick off the background update check. Returns immediately.
@@ -32,7 +32,7 @@ use crate::update;
 /// the throttle window hasn't elapsed, no newer release exists, or
 /// the user has already hit "Skip this version", the thread exits
 /// silently without touching the UI.
-pub fn start_update_check(strings: &'static Strings) {
+pub fn start_update_check() {
     std::thread::spawn(move || {
         if !update::should_check_now() {
             return;
@@ -46,7 +46,7 @@ pub fn start_update_check(strings: &'static Strings) {
         // Marshal the prompt back to the UI thread so the Slint
         // window is owned by the same thread as the rest of the GUI.
         let _ = slint::invoke_from_event_loop(move || {
-            dialogs::show_update_dialog(info, strings);
+            dialogs::show_update_dialog(info);
         });
     });
 }
@@ -67,7 +67,11 @@ thread_local! {
 /// / failed) instead of staying silent. The fetch runs on a worker
 /// thread so the GUI stays responsive; a guard flag drops repeat clicks
 /// while a check is already running.
-pub fn run_manual_check(strings: &'static Strings) {
+///
+/// `window` is only used to reach the translated MessageBox strings
+/// (`Texts`) once the result is back on the UI thread; if the window
+/// is gone by then there is nobody to tell, so the result is dropped.
+pub fn run_manual_check(window: Weak<MainWindow>) {
     if MANUAL_CHECK_RUNNING.with(|c| c.get()) {
         return;
     }
@@ -77,19 +81,23 @@ pub fn run_manual_check(strings: &'static Strings) {
         let outcome = update::check_for_update_now();
         let _ = slint::invoke_from_event_loop(move || {
             MANUAL_CHECK_RUNNING.with(|c| c.set(false));
+            let Some(window) = window.upgrade() else {
+                return;
+            };
+            let texts = window.global::<Texts>();
             match outcome {
                 update::ManualCheck::Available(info) => {
-                    dialogs::show_update_dialog(info, strings);
+                    dialogs::show_update_dialog(info);
                 }
                 update::ManualCheck::UpToDate => {
-                    let msg =
-                        strings
-                            .update_up_to_date
-                            .replacen("{}", update::current_version(), 1);
-                    message_box::info(strings.update_check_title, &msg);
+                    let msg = texts.invoke_update_up_to_date(update::current_version().into());
+                    message_box::info(&texts.get_update_check_title(), &msg);
                 }
                 update::ManualCheck::Failed => {
-                    message_box::error(strings.update_check_title, strings.update_check_failed);
+                    message_box::error(
+                        &texts.get_update_check_title(),
+                        &texts.get_update_check_failed(),
+                    );
                 }
             }
         });

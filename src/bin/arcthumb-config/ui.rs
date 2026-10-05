@@ -15,7 +15,7 @@ use std::time::Duration;
 use arcthumb::elevation;
 use arcthumb::registry::Scope;
 use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings, SortOrder};
-use slint::{ComponentHandle, SharedString, Timer};
+use slint::{ComponentHandle, ModelRc, SharedString, Timer, VecModel};
 
 use crate::apply::{self, ApplyAction, RealRegistryOps};
 use crate::cache;
@@ -23,7 +23,7 @@ use crate::cli;
 use crate::dialogs;
 use crate::elevate::{self, Elevated};
 use crate::extension_model::ExtensionModel;
-use crate::locale::{self, LanguageChoice, Strings};
+use crate::locale::{self, LanguageChoice};
 use crate::message_box;
 use crate::state::{self, EXT_COUNT, UiModel};
 use crate::update;
@@ -37,9 +37,11 @@ slint::include_modules!();
 
 /// Launch the settings GUI. Blocks on the Slint event loop.
 pub fn run_gui() -> Result<(), slint::PlatformError> {
-    let strings: &'static Strings = locale::current();
     let window = MainWindow::new()?;
-    apply_strings(&window, strings);
+    // Slint learns which translations are bundled when the first
+    // component is created, so the language can only be chosen now.
+    locale::activate(locale::resolve());
+    window.set_language_names(language_names_model(&window));
 
     let initial_model = UiModel::load();
     let lists = ExtensionLists::from_model(&initial_model);
@@ -49,8 +51,8 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // values. The Sort and Cover ComboBoxes reset their current-index
     // to 0 whenever their `model` changes (see combobox-base.slint:
     // `changed model => reset-current()`), and the model does change
-    // once here — `apply_strings` above swapped the dropdown labels
-    // from their empty defaults to the localized strings. That reset is
+    // once here — `locale::activate` above switched their `@tr` labels
+    // to the chosen language. That reset is
     // queued, not immediate: it would otherwise fire on the first
     // event-loop iteration, *after* push_model, and snap both dropdowns
     // back to the first item. Running the handlers now consumes the
@@ -72,7 +74,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
         let lists = lists.clone();
         window.on_ok_clicked(move || {
             if let Some(w) = weak.upgrade()
-                && apply_changes(&w, &state, &lists, strings)
+                && apply_changes(&w, &state, &lists)
             {
                 let _ = w.hide();
             }
@@ -86,7 +88,7 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
         let lists = lists.clone();
         window.on_apply_clicked(move || {
             if let Some(w) = weak.upgrade() {
-                let _ = apply_changes(&w, &state, &lists, strings);
+                let _ = apply_changes(&w, &state, &lists);
             }
         });
     }
@@ -102,26 +104,39 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     }
 
     // Regenerate
-    window.on_regenerate_clicked(move || {
-        handle_regenerate(strings);
-    });
+    {
+        let weak = window.as_weak();
+        window.on_regenerate_clicked(move || {
+            if let Some(w) = weak.upgrade() {
+                handle_regenerate(&w);
+            }
+        });
+    }
 
     // Help → Support — opens the support page in the browser. The
     // page hosts the platform links, so they can change without an
     // app rebuild.
-    window.on_donate_clicked(move || {
-        update::open_url(strings.support_url);
-    });
+    {
+        let weak = window.as_weak();
+        window.on_donate_clicked(move || {
+            if let Some(w) = weak.upgrade() {
+                update::open_url(&w.global::<Texts>().get_support_url());
+            }
+        });
+    }
 
     // Help → Check for updates — manual check that ignores the 24-hour
     // throttle and any skipped version.
-    window.on_check_updates_clicked(move || {
-        update_check::run_manual_check(strings);
-    });
+    {
+        let weak = window.as_weak();
+        window.on_check_updates_clicked(move || {
+            update_check::run_manual_check(weak.clone());
+        });
+    }
 
     // Help → About
     window.on_about_clicked(move || {
-        dialogs::show_about(strings);
+        dialogs::show_about();
     });
 
     // File → Exit
@@ -145,14 +160,15 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // against it to tell whether the binary was updated in between.
     update::record_run_version();
     if let Some(ver) = donation_version {
+        let support_url = window.global::<Texts>().get_support_url().to_string();
         Timer::single_shot(Duration::ZERO, move || {
-            dialogs::show_donation_dialog(&ver, strings);
+            dialogs::show_donation_dialog(&ver, support_url);
         });
     }
 
     // Background update check — non-blocking. The result is marshalled
     // back onto the UI thread via `slint::invoke_from_event_loop`.
-    update_check::start_update_check(strings);
+    update_check::start_update_check();
 
     window.run()?;
     Ok(())
@@ -214,40 +230,19 @@ impl ExtensionLists {
 // Model ⇄ Slint properties
 // =============================================================================
 
-fn apply_strings(window: &MainWindow, s: &Strings) {
-    window.set_window_title(SharedString::from(s.window_title));
-    window.set_menu_file(SharedString::from(s.menu_file));
-    window.set_menu_file_exit(SharedString::from(s.menu_file_exit));
-    window.set_menu_help(SharedString::from(s.menu_help));
-    window.set_menu_help_check_updates(SharedString::from(s.menu_help_check_updates));
-    window.set_menu_help_donate(SharedString::from(s.menu_help_donate));
-    window.set_menu_help_about(SharedString::from(s.menu_help_about));
-    window.set_tab_files(SharedString::from(s.tab_files));
-    window.set_tab_thumbnail(SharedString::from(s.tab_thumbnail));
-    window.set_tab_display(SharedString::from(s.tab_display));
-    window.set_group_extensions(SharedString::from(s.group_extensions));
-    window.set_group_image_exts(SharedString::from(s.group_image_exts));
-    window.set_group_sort(SharedString::from(s.group_sort));
-    window.set_sort_natural_label(SharedString::from(s.sort_natural));
-    window.set_sort_alpha_label(SharedString::from(s.sort_alphabetical));
-    window.set_group_cover(SharedString::from(s.group_cover));
-    window.set_cover_prefer_label(SharedString::from(s.cover_prefer));
-    window.set_cover_only_label(SharedString::from(s.cover_only));
-    window.set_cover_ignore_label(SharedString::from(s.cover_ignore));
-    window.set_group_overlay(SharedString::from(s.group_overlay));
-    window.set_regen_hint(SharedString::from(s.regen_hint));
-    window.set_group_preview(SharedString::from(s.group_preview));
-    window.set_group_language(SharedString::from(s.group_language));
-    window.set_language_auto_label(SharedString::from(s.language_auto));
-    window.set_language_hint(SharedString::from(s.language_hint));
-    window.set_enable_preview_label(SharedString::from(s.cb_enable_preview));
-    window.set_overlay_border_label(SharedString::from(s.cb_overlay_border));
-    window.set_overlay_label_label(SharedString::from(s.cb_overlay_label));
-    window.set_overlay_exts_caption(SharedString::from(s.overlay_exts_caption));
-    window.set_btn_ok(SharedString::from(s.btn_ok));
-    window.set_btn_cancel(SharedString::from(s.btn_cancel));
-    window.set_btn_apply(SharedString::from(s.btn_apply));
-    window.set_btn_regenerate(SharedString::from(s.btn_regenerate));
+/// Entries of the language dropdown, in `LanguageChoice::to_index`
+/// order: the translated "Automatic" label first, then each bundled
+/// language in its own language. Built here rather than in `.slint`
+/// because the language list is generated at build time from the
+/// catalogs under `lang/`.
+fn language_names_model(window: &MainWindow) -> ModelRc<SharedString> {
+    let mut names = vec![window.global::<Texts>().get_language_auto()];
+    names.extend(
+        locale::LANGUAGES
+            .iter()
+            .map(|tag| SharedString::from(locale::native_name(tag))),
+    );
+    ModelRc::new(VecModel::from(names))
 }
 
 /// Push the non-extension parts of `model` into the Slint window.
@@ -295,8 +290,8 @@ fn apply_changes(
     window: &MainWindow,
     state: &Rc<RefCell<UiModel>>,
     lists: &ExtensionLists,
-    strings: &Strings,
 ) -> bool {
+    let texts = window.global::<Texts>();
     let (new_settings, new_ext_enabled, new_preview_enabled) = collect_from_ui(window, lists);
 
     let plan = apply::compute_apply_plan(
@@ -320,7 +315,7 @@ fn apply_changes(
     let outcome = if needs_elevation {
         let outcome = apply::apply_plan(&local, &ops);
         if outcome.is_ok() {
-            elevated_ok = apply_shell_elevated(scope, &shell, strings);
+            elevated_ok = apply_shell_elevated(scope, &shell, &texts);
         }
         outcome
     } else {
@@ -331,24 +326,24 @@ fn apply_changes(
 
     if let Some(detail) = &outcome.settings_save_error {
         message_box::error(
-            strings.error_title,
-            &format!("{}\n\n{detail}", strings.error_save),
+            &texts.get_app_title(),
+            &format!("{}\n\n{detail}", texts.get_error_save()),
         );
     }
     if !outcome.failed_extensions.is_empty() {
         message_box::error(
-            strings.error_title,
+            &texts.get_app_title(),
             &format!(
                 "{}\n\nfailed: {}",
-                strings.error_register,
+                texts.get_error_register(),
                 outcome.failed_extensions.join(", ")
             ),
         );
     }
     if let Some(detail) = &outcome.preview_error {
         message_box::error(
-            strings.error_title,
-            &format!("{}\n\n{detail}", strings.error_register),
+            &texts.get_app_title(),
+            &format!("{}\n\n{detail}", texts.get_error_register()),
         );
     }
 
@@ -362,8 +357,8 @@ fn apply_changes(
     {
         language_ok = false;
         message_box::error(
-            strings.error_title,
-            &format!("{}\n\n{e}", strings.error_save),
+            &texts.get_app_title(),
+            &format!("{}\n\n{e}", texts.get_error_save()),
         );
     }
 
@@ -378,7 +373,7 @@ fn apply_changes(
 /// Hand the registration changes to an elevated copy of this exe and
 /// report the result to the user. Returns `true` when they were
 /// applied.
-fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], strings: &Strings) -> bool {
+fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], texts: &Texts<'_>) -> bool {
     let mut args = vec![
         cli::APPLY_SHELL_FLAG.to_string(),
         cli::scope_arg(scope).to_string(),
@@ -388,15 +383,18 @@ fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], strings: &Strings) 
     let detail = match elevate::run_self_elevated(&args) {
         Ok(Elevated::Exited(0)) => return true,
         Ok(Elevated::Declined) => {
-            message_box::error(strings.error_title, strings.error_elevation_declined);
+            message_box::error(
+                &texts.get_app_title(),
+                &texts.get_error_elevation_declined(),
+            );
             return false;
         }
         Ok(Elevated::Exited(code)) => format!("exit code {code}"),
         Err(e) => e.to_string(),
     };
     message_box::error(
-        strings.error_title,
-        &format!("{}\n\n{detail}", strings.error_register),
+        &texts.get_app_title(),
+        &format!("{}\n\n{detail}", texts.get_error_register()),
     );
     false
 }
@@ -405,21 +403,22 @@ fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], strings: &Strings) 
 // Regenerate thumbnails
 // =============================================================================
 
-fn handle_regenerate(strings: &Strings) {
-    if !message_box::confirm_warning(strings.error_title, strings.regen_confirm) {
+fn handle_regenerate(window: &MainWindow) {
+    let texts = window.global::<Texts>();
+    if !message_box::confirm_warning(&texts.get_app_title(), &texts.get_regen_confirm()) {
         return;
     }
     match cache::wipe_thumbnail_cache() {
         Ok(report) if report.failed.is_empty() => {
-            message_box::info(strings.error_title, strings.regen_done);
+            message_box::info(&texts.get_app_title(), &texts.get_regen_done());
         }
         Ok(_) => {
-            message_box::error(strings.error_title, strings.regen_partial);
+            message_box::error(&texts.get_app_title(), &texts.get_regen_partial());
         }
         Err(e) => {
             message_box::error(
-                strings.error_title,
-                &format!("{}\n\n{e}", strings.regen_partial),
+                &texts.get_app_title(),
+                &format!("{}\n\n{e}", texts.get_regen_partial()),
             );
         }
     }
@@ -446,6 +445,7 @@ mod tests {
 
     use super::*;
     use arcthumb::settings::{CoverMode, SortOrder};
+    use slint::Model;
 
     fn baseline_model() -> UiModel {
         let mut ext = [false; EXT_COUNT];
@@ -604,15 +604,17 @@ mod tests {
 
         // ---- dropdown indices survive the ComboBox model-change reset
         // Regression guard for #36: the Sort/Cover ComboBoxes reset
-        // current-index to 0 when their model changes (label swap in
-        // apply_strings). run_gui drains that reset *before* push_model,
-        // and the two-way bindings let push_model set the index after.
-        // Here we replay that order, then run the change handlers a
-        // second time (as the first real event-loop iteration would) to
-        // prove the pushed values aren't snapped back to the first item.
+        // current-index to 0 when their model changes (their `@tr`
+        // labels change with the language). run_gui drains that reset
+        // *before* push_model, and the two-way bindings let push_model
+        // set the index after. Here we replay that order, then run the
+        // change handlers a second time (as the first real event-loop
+        // iteration would) to prove the pushed values aren't snapped
+        // back to the first item.
         {
             let window = MainWindow::new().expect("create MainWindow");
-            apply_strings(&window, &locale::EN); // swaps labels -> queues reset
+            locale::activate("ja"); // relabels the dropdowns -> queues reset
+            window.set_language_names(language_names_model(&window));
             slint::platform::update_timers_and_animations(); // drain reset
 
             let settings = Settings {
@@ -668,79 +670,74 @@ mod tests {
             }
         }
 
-        // ---- apply_strings_populates_every_label_for_english ---
-        // Spot-check every property `apply_strings` writes. A
-        // future regression that swaps two setters or drops one
-        // would leave that property as the empty default.
+        // ---- bundled_translation_switches_the_ui_language -------
+        // Slint auto-picks a bundled language from the OS format
+        // locale when the first component is created, so pin English
+        // explicitly before reading anything, the way `run_gui` does
+        // through `locale::activate`.
         {
             let window = MainWindow::new().expect("create MainWindow");
-            apply_strings(&window, &locale::EN);
+            let texts = window.global::<Texts>();
 
-            assert_eq!(window.get_window_title(), locale::EN.window_title);
-            assert_eq!(window.get_menu_file(), locale::EN.menu_file);
-            assert_eq!(window.get_menu_file_exit(), locale::EN.menu_file_exit);
-            assert_eq!(window.get_menu_help(), locale::EN.menu_help);
+            locale::activate("en");
+            assert_eq!(window.get_window_title(), "ArcThumb Configuration");
+            assert_eq!(texts.get_regen_confirm().lines().last(), Some("Continue?"));
             assert_eq!(
-                window.get_menu_help_check_updates(),
-                locale::EN.menu_help_check_updates
-            );
-            assert_eq!(window.get_menu_help_donate(), locale::EN.menu_help_donate);
-            assert_eq!(window.get_menu_help_about(), locale::EN.menu_help_about);
-            assert_eq!(window.get_group_extensions(), locale::EN.group_extensions);
-            assert_eq!(window.get_group_sort(), locale::EN.group_sort);
-            assert_eq!(window.get_sort_natural_label(), locale::EN.sort_natural);
-            assert_eq!(window.get_sort_alpha_label(), locale::EN.sort_alphabetical);
-            assert_eq!(window.get_group_cover(), locale::EN.group_cover);
-            assert_eq!(window.get_cover_prefer_label(), locale::EN.cover_prefer);
-            assert_eq!(window.get_cover_only_label(), locale::EN.cover_only);
-            assert_eq!(window.get_cover_ignore_label(), locale::EN.cover_ignore);
-            assert_eq!(window.get_tab_files(), locale::EN.tab_files);
-            assert_eq!(window.get_tab_thumbnail(), locale::EN.tab_thumbnail);
-            assert_eq!(window.get_tab_display(), locale::EN.tab_display);
-            assert_eq!(window.get_group_preview(), locale::EN.group_preview);
-            assert_eq!(window.get_group_language(), locale::EN.group_language);
-            assert_eq!(window.get_language_auto_label(), locale::EN.language_auto);
-            assert_eq!(window.get_language_hint(), locale::EN.language_hint);
-            assert_eq!(window.get_group_overlay(), locale::EN.group_overlay);
-            assert_eq!(window.get_regen_hint(), locale::EN.regen_hint);
-            assert_eq!(
-                window.get_enable_preview_label(),
-                locale::EN.cb_enable_preview
+                texts.invoke_update_up_to_date("1.2.3".into()),
+                "You're on the latest version (v1.2.3)."
             );
             assert_eq!(
-                window.get_overlay_border_label(),
-                locale::EN.cb_overlay_border
+                texts.get_support_url(),
+                "https://citrussoda.com/en/arcthumb/sponsor"
+            );
+
+            locale::activate("ja");
+            assert_eq!(window.get_window_title(), "ArcThumb 設定");
+            assert_eq!(
+                texts.get_regen_confirm().lines().last(),
+                Some("続行しますか？")
             );
             assert_eq!(
-                window.get_overlay_label_label(),
-                locale::EN.cb_overlay_label
+                texts.invoke_update_up_to_date("1.2.3".into()),
+                "最新バージョンです (v1.2.3)。"
             );
             assert_eq!(
-                window.get_overlay_exts_caption(),
-                locale::EN.overlay_exts_caption
+                texts.get_support_url(),
+                "https://citrussoda.com/arcthumb/sponsor"
             );
-            assert_eq!(window.get_btn_ok(), locale::EN.btn_ok);
-            assert_eq!(window.get_btn_cancel(), locale::EN.btn_cancel);
-            assert_eq!(window.get_btn_apply(), locale::EN.btn_apply);
-            assert_eq!(window.get_btn_regenerate(), locale::EN.btn_regenerate);
+            // An msgid left untranslated in the catalog shows the
+            // English text, not an empty string.
+            assert_eq!(texts.get_app_title(), "ArcThumb");
+
+            // Every bundled catalog must at least translate the window
+            // title; an untouched one is probably empty or has the
+            // wrong msgids.
+            for tag in locale::LANGUAGES.iter().skip(1) {
+                locale::activate(tag);
+                assert_ne!(
+                    window.get_window_title(),
+                    "ArcThumb Configuration",
+                    "{tag}: window title is not translated"
+                );
+            }
+
+            locale::activate("en");
         }
 
-        // ---- apply_strings_populates_every_label_for_japanese --
+        // ---- language_dropdown_model_matches_language_choice ----
+        // The dropdown entries are built in Rust; their order must be
+        // the one `LanguageChoice::{to,from}_index` assumes.
         {
             let window = MainWindow::new().expect("create MainWindow");
-            apply_strings(&window, &locale::JA);
-
-            assert_eq!(window.get_window_title(), locale::JA.window_title);
-            assert_eq!(
-                window.get_menu_help_check_updates(),
-                locale::JA.menu_help_check_updates
-            );
-            assert_eq!(window.get_menu_help_donate(), locale::JA.menu_help_donate);
-            assert_eq!(window.get_menu_help_about(), locale::JA.menu_help_about);
-            assert_eq!(window.get_group_extensions(), locale::JA.group_extensions);
-            assert_eq!(window.get_btn_regenerate(), locale::JA.btn_regenerate);
-            // Make sure the language actually switched.
-            assert_ne!(window.get_window_title(), locale::EN.window_title);
+            locale::activate("en");
+            let names = language_names_model(&window);
+            assert_eq!(names.row_count(), locale::LANGUAGES.len() + 1);
+            assert_eq!(names.row_data(0).unwrap(), "Automatic (follow Windows)");
+            for (i, tag) in locale::LANGUAGES.iter().enumerate() {
+                let index = LanguageChoice::Fixed(tag).to_index() as usize;
+                assert_eq!(index, i + 1);
+                assert_eq!(names.row_data(index).unwrap(), locale::native_name(tag));
+            }
         }
 
         // ---- ok_callback_with_no_changes_produces_empty_plan ---

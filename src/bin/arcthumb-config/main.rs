@@ -100,11 +100,8 @@ fn main() {
             // not even a console line — and reports the binary as
             // broken. Reported in microsoft/winget-pkgs#364519.
             if let Err(e) = ui::run_gui() {
-                let strings = locale::current();
-                message_box::error(
-                    strings.error_title,
-                    &format!("{}\n\n{e}", strings.error_gui_init),
-                );
+                let (title, body) = locale::gui_init_failure_message();
+                message_box::error(title, &format!("{body}\n\n{e}"));
                 std::process::exit(5);
             }
         }
