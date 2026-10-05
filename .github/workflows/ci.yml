@@ -3,6 +3,11 @@
 # Runs only on windows-latest because ArcThumb is a Windows shell
 # extension and there is no point compiling it elsewhere.
 #
+# The work is split into three jobs that run in parallel, so the
+# wall-clock time is the slowest job (the LTO release build) rather
+# than the sum of everything. The repository is public, so parallel
+# Windows jobs cost nothing extra.
+#
 # Clippy runs with `-D warnings`: the codebase is warning-clean and
 # any new warning fails the build.
 
@@ -19,9 +24,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Full debuginfo on Windows means multi-hundred-MB PDBs in target/,
+  # which is most of what rust-cache has to download and upload.
+  # Line tables are enough to keep file:line in test backtraces.
+  # Only affects the dev/test profiles; release is untouched.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
-  test:
-    name: Build and test
+  lint:
+    name: Format and clippy
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -34,6 +46,12 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Only develop writes the cache. PR runs restore from it but
+          # don't save their own copy, otherwise every dependabot PR
+          # adds ~1 GB and pushes the develop cache toward the repo's
+          # 10 GB eviction limit.
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -41,14 +59,42 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Test (debug)
+  test:
+    name: Test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+
+      # `jxl` is a default feature, so this already covers the jxl-rs
+      # decode path in decode.rs.
+      - name: Test
         run: cargo test
 
-      # The `jxl` feature is off by default, so the steps above never
-      # compile decode.rs's jxl-oxide path. Build and test it explicitly
-      # here, otherwise a breaking jxl-oxide bump passes CI unnoticed.
-      - name: Test (jxl feature)
-        run: cargo test --features jxl
+  release:
+    name: Build (release)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
 
-      - name: Build (release)
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/develop' }}
+
+      # Fat LTO + codegen-units=1 on the final crate takes ~3.5 min
+      # and can't be cached; that is why this has its own job.
+      - name: Build
         run: cargo build --release
