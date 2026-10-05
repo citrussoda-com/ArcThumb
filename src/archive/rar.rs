@@ -69,7 +69,11 @@ pub(super) fn rar_read_first_image<R: Read>(
     let mut archive = Archive::new(&temp_path).open_for_processing()?;
     while let Some(header) = archive.read_header()? {
         let name = header.entry().filename.to_string_lossy().into_owned();
-        if name == target {
+        // The size is checked again here because names need not be
+        // unique: an oversized entry skipped in pass 1 can share its
+        // name with the one that was picked, and unrar buffers whatever
+        // size the header declares.
+        if name == target && header.entry().unpacked_size <= limits::MAX_ENTRY_SIZE {
             let (data, _next) = header.read()?;
             return Ok((target, data));
         }

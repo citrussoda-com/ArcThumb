@@ -41,9 +41,10 @@ pub struct WipeReport {
 /// already not running, that is fine; if relaunching explorer fails,
 /// Windows usually starts it again on its own at next logon.
 ///
-/// Returns `Err` only when the wipe could not even start — i.e. the
-/// `LOCALAPPDATA` environment variable is missing or the Explorer
-/// directory does not exist on disk.
+/// Returns `Err` when the `LOCALAPPDATA` environment variable is
+/// missing, the Explorer directory does not exist on disk, or the
+/// directory cannot be listed. Once Explorer has been stopped it is
+/// started again on every path, including that last error.
 pub fn wipe_thumbnail_cache() -> Result<WipeReport, String> {
     let local_appdata = std::env::var("LOCALAPPDATA")
         .map_err(|_| "LOCALAPPDATA environment variable is not set".to_string())?;
@@ -70,15 +71,28 @@ pub fn wipe_thumbnail_cache() -> Result<WipeReport, String> {
     //    almost always fails with "file is in use".
     thread::sleep(Duration::from_millis(400));
 
-    // 3. Delete every cache db. Two passes: handles that were still
-    //    held during the first pass usually clear after another wait.
+    // 3. Delete every cache db.
+    let deleted = delete_cache_files(&explorer_dir);
+
+    // 4. Bring Explorer back, whatever step 3 returned. Without this
+    //    the user is left staring at a black wallpaper — Windows does
+    //    not auto-restart shells that were killed by `taskkill /F`.
+    let _ = Command::new("explorer.exe")
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+
+    deleted.map(|failed| WipeReport { failed })
+}
+
+/// Delete every cache db under `explorer_dir` and return the ones that
+/// could not be removed. Two passes: handles that were still held
+/// during the first pass usually clear after another wait.
+fn delete_cache_files(explorer_dir: &std::path::Path) -> Result<Vec<PathBuf>, String> {
     let mut failed: Vec<PathBuf> = Vec::new();
     for attempt in 0..2 {
         failed.clear();
-        let entries = match std::fs::read_dir(&explorer_dir) {
-            Ok(it) => it,
-            Err(e) => return Err(format!("read_dir failed: {e}")),
-        };
+        let entries =
+            std::fs::read_dir(explorer_dir).map_err(|e| format!("read_dir failed: {e}"))?;
         for entry in entries.flatten() {
             let path = entry.path();
             if !is_cache_file(&path) {
@@ -95,15 +109,7 @@ pub fn wipe_thumbnail_cache() -> Result<WipeReport, String> {
             thread::sleep(Duration::from_millis(400));
         }
     }
-
-    // 4. Bring Explorer back. Without this the user is left staring
-    //    at a black wallpaper — Windows does not auto-restart shells
-    //    that were killed by `taskkill /F`.
-    let _ = Command::new("explorer.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
-
-    Ok(WipeReport { failed })
+    Ok(failed)
 }
 
 /// True if `path`'s file name matches `thumbcache_*.db` or

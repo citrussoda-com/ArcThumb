@@ -1,8 +1,10 @@
 //! UI strings for the config GUI, with English + Japanese translations.
 //!
 //! Selection order:
-//! 1. `HKCU\Software\ArcThumb\Language` registry override (`"en"` | `"ja"`).
-//! 2. OS default locale via `GetUserDefaultLocaleName` — starts with `"ja"` → Japanese.
+//! 1. `HKCU\Software\ArcThumb\Language` registry override (`"en"` | `"ja"`),
+//!    set from the language dropdown on the Display tab.
+//! 2. The Windows display language via `GetUserDefaultUILanguage` —
+//!    Japanese → Japanese.
 //! 3. English fallback.
 //!
 //! Strings are handed to the Slint UI at startup via `in` properties.
@@ -10,8 +12,13 @@
 //! gettext once the gettext toolchain (`xgettext`/`msgfmt`) is wired
 //! into the build.
 
+use std::io;
+
 use winreg::RegKey;
 use winreg::enums::*;
+
+const SETTINGS_KEY: &str = "Software\\ArcThumb";
+const LANGUAGE_VALUE: &str = "Language";
 
 pub struct Strings {
     pub window_title: &'static str,
@@ -21,6 +28,9 @@ pub struct Strings {
     pub menu_help_check_updates: &'static str,
     pub menu_help_donate: &'static str,
     pub menu_help_about: &'static str,
+    pub tab_files: &'static str,
+    pub tab_thumbnail: &'static str,
+    pub tab_display: &'static str,
     pub group_extensions: &'static str,
     pub group_image_exts: &'static str,
     pub group_sort: &'static str,
@@ -30,10 +40,19 @@ pub struct Strings {
     pub cover_prefer: &'static str,
     pub cover_only: &'static str,
     pub cover_ignore: &'static str,
-    pub group_other: &'static str,
+    pub group_overlay: &'static str,
+    // Shown under settings that only reach existing thumbnails after
+    // the cache is rebuilt.
+    pub regen_hint: &'static str,
+    pub group_preview: &'static str,
+    pub group_language: &'static str,
+    pub language_auto: &'static str,
+    pub language_hint: &'static str,
     pub cb_enable_preview: &'static str,
     pub cb_overlay_border: &'static str,
     pub cb_overlay_label: &'static str,
+    // Caption above the per-extension overlay checkboxes.
+    pub overlay_exts_caption: &'static str,
     pub btn_ok: &'static str,
     pub btn_cancel: &'static str,
     pub btn_apply: &'static str,
@@ -47,6 +66,7 @@ pub struct Strings {
     pub error_title: &'static str,
     pub error_save: &'static str,
     pub error_register: &'static str,
+    pub error_elevation_declined: &'static str,
     pub error_gui_init: &'static str,
     // Update check dialog
     pub update_title: &'static str,
@@ -82,6 +102,9 @@ pub const EN: Strings = Strings {
     menu_help_check_updates: "Check for updates",
     menu_help_donate: "Support ArcThumb",
     menu_help_about: "About ArcThumb",
+    tab_files: "Files",
+    tab_thumbnail: "Thumbnail",
+    tab_display: "Display",
     group_extensions: "Enabled extensions",
     group_image_exts: "Image formats used for thumbnails (inside archives)",
     group_sort: "Sort order",
@@ -91,10 +114,16 @@ pub const EN: Strings = Strings {
     cover_prefer: "Use cover if present, else first page",
     cover_only: "Cover only (no thumbnail otherwise)",
     cover_ignore: "Always use first page",
-    group_other: "Other settings",
+    group_overlay: "Identification overlay",
+    regen_hint: "To apply a change here to thumbnails that already exist, use Regenerate thumbnails.",
+    group_preview: "Preview pane",
+    group_language: "Language",
+    language_auto: "Automatic (follow Windows)",
+    language_hint: "A language change shows up the next time you open this window.",
     cb_enable_preview: "Enable preview pane (Alt+P)",
     cb_overlay_border: "Mark archives with a coloured border",
     cb_overlay_label: "Mark archives with a format label (CBZ, EPUB, ...)",
+    overlay_exts_caption: "Show the overlay on these file types:",
     btn_ok: "OK",
     btn_cancel: "Cancel",
     btn_apply: "Apply",
@@ -108,6 +137,7 @@ pub const EN: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "Failed to save settings to the registry.",
     error_register: "Failed to update shell extension registration.",
+    error_elevation_declined: "ArcThumb is installed for all users, so changing the enabled extensions or the preview pane needs administrator rights.\n\nThose two settings were not changed.",
     error_gui_init: "Failed to initialize the configuration UI. The graphics backend could not start. This can happen on systems without GPU acceleration (for example Windows Sandbox).",
     update_title: "Update available",
     update_available: "A new version of ArcThumb is available: v{}  (current: v{})",
@@ -133,6 +163,9 @@ pub const JA: Strings = Strings {
     menu_help_check_updates: "更新を確認",
     menu_help_donate: "ArcThumb を支援する",
     menu_help_about: "ArcThumb について",
+    tab_files: "対象ファイル",
+    tab_thumbnail: "サムネイル",
+    tab_display: "表示",
     group_extensions: "有効にする拡張子",
     group_image_exts: "サムネイルに使う画像形式 (アーカイブ内)",
     group_sort: "並び順",
@@ -142,10 +175,16 @@ pub const JA: Strings = Strings {
     cover_prefer: "カバーを優先（無ければ先頭ページ）",
     cover_only: "カバーがあるときだけ表示（無ければ通常アイコン）",
     cover_ignore: "常に先頭ページを使う",
-    group_other: "その他の設定",
+    group_overlay: "識別オーバーレイ",
+    regen_hint: "作成済みのサムネイルに反映するには「サムネイルを再生成」を実行してください。",
+    group_preview: "プレビュー ウィンドウ",
+    group_language: "言語",
+    language_auto: "自動 (Windows に合わせる)",
+    language_hint: "言語の変更は、この設定画面を次に開いたときに反映されます。",
     cb_enable_preview: "プレビュー ウィンドウを有効にする (Alt+P)",
     cb_overlay_border: "アーカイブを色付きの枠線で示す",
     cb_overlay_label: "アーカイブにフォーマットラベルを表示 (CBZ, EPUB, ...)",
+    overlay_exts_caption: "オーバーレイを付ける拡張子:",
     btn_ok: "OK",
     btn_cancel: "キャンセル",
     btn_apply: "適用",
@@ -159,6 +198,7 @@ pub const JA: Strings = Strings {
     error_title: "ArcThumb",
     error_save: "設定の保存に失敗しました。",
     error_register: "シェル拡張の登録状態の更新に失敗しました。",
+    error_elevation_declined: "ArcThumb はすべてのユーザー向けにインストールされているため、有効な拡張子とプレビューウィンドウの変更には管理者権限が必要です。\n\nこの 2 つの設定は変更されませんでした。",
     error_gui_init: "設定 UI の初期化に失敗しました。グラフィックスバックエンドを開始できませんでした。GPU アクセラレーションが利用できない環境 (Windows Sandbox など) で発生することがあります。",
     update_title: "アップデート通知",
     update_available: "ArcThumb の新しいバージョンがあります: v{}  (現在: v{})",
@@ -176,38 +216,130 @@ pub const JA: Strings = Strings {
     support_url: "https://citrussoda.com/arcthumb/sponsor",
 };
 
-/// Resolve the UI language to use right now.
-pub fn current() -> &'static Strings {
-    // 1. Registry override
-    if let Ok(key) = RegKey::predef(HKEY_CURRENT_USER).open_subkey("Software\\ArcThumb")
-        && let Ok(lang) = key.get_value::<String, _>("Language")
-    {
-        match lang.to_ascii_lowercase().as_str() {
-            "en" | "english" => return &EN,
-            "ja" | "japanese" | "jp" => return &JA,
-            _ => {}
+/// What the language dropdown is set to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanguageChoice {
+    /// No override; follow the Windows display language.
+    Auto,
+    English,
+    Japanese,
+}
+
+impl LanguageChoice {
+    /// Position in the language dropdown. Must stay in sync with the
+    /// dropdown model order in `ui/main.slint`.
+    pub fn to_index(self) -> i32 {
+        match self {
+            LanguageChoice::Auto => 0,
+            LanguageChoice::English => 1,
+            LanguageChoice::Japanese => 2,
         }
     }
 
-    // 2. OS default locale
-    if detect_os_locale_is_japanese() {
-        return &JA;
+    /// Inverse of [`to_index`](Self::to_index). Any out-of-range index
+    /// falls back to [`LanguageChoice::Auto`].
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => LanguageChoice::English,
+            2 => LanguageChoice::Japanese,
+            _ => LanguageChoice::Auto,
+        }
     }
 
-    // 3. Fallback
-    &EN
+    /// Parse the registry value. Anything unrecognised reads as no
+    /// override.
+    fn from_registry_value(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "en" | "english" => LanguageChoice::English,
+            "ja" | "japanese" | "jp" => LanguageChoice::Japanese,
+            _ => LanguageChoice::Auto,
+        }
+    }
 }
 
-fn detect_os_locale_is_japanese() -> bool {
-    use windows::Win32::Globalization::GetUserDefaultLocaleName;
+/// The override stored in the registry, [`LanguageChoice::Auto`] when
+/// there is none.
+pub fn language_override() -> LanguageChoice {
+    RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(SETTINGS_KEY)
+        .and_then(|key| key.get_value::<String, _>(LANGUAGE_VALUE))
+        .map(|value| LanguageChoice::from_registry_value(&value))
+        .unwrap_or(LanguageChoice::Auto)
+}
 
-    // LOCALE_NAME_MAX_LENGTH = 85
-    let mut buf = [0u16; 85];
-    let len = unsafe { GetUserDefaultLocaleName(&mut buf) };
-    if len <= 0 {
-        return false;
+/// Store the override. `Auto` removes the value so the Windows display
+/// language decides again.
+pub fn set_language_override(choice: LanguageChoice) -> io::Result<()> {
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(SETTINGS_KEY)?;
+    let value = match choice {
+        LanguageChoice::English => "en",
+        LanguageChoice::Japanese => "ja",
+        LanguageChoice::Auto => {
+            return match key.delete_value(LANGUAGE_VALUE) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            };
+        }
+    };
+    key.set_value(LANGUAGE_VALUE, &value)
+}
+
+/// Resolve the UI language to use right now.
+pub fn current() -> &'static Strings {
+    match language_override() {
+        LanguageChoice::English => &EN,
+        LanguageChoice::Japanese => &JA,
+        LanguageChoice::Auto if os_display_language_is_japanese() => &JA,
+        LanguageChoice::Auto => &EN,
     }
-    let end = (len as usize).saturating_sub(1);
-    let s = String::from_utf16_lossy(&buf[..end]);
-    s.to_ascii_lowercase().starts_with("ja")
+}
+
+/// `true` when the Windows display language is Japanese. This is the
+/// language Windows itself is shown in, not the regional format: a
+/// user can run English Windows with Japanese date formats, and the
+/// format locale would then pick the wrong UI.
+fn os_display_language_is_japanese() -> bool {
+    use windows::Win32::Globalization::GetUserDefaultUILanguage;
+
+    const LANG_JAPANESE: u16 = 0x11;
+    // The low 10 bits of a LANGID are the primary language.
+    let langid = unsafe { GetUserDefaultUILanguage() };
+    langid & 0x3ff == LANG_JAPANESE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_choice_index_round_trips() {
+        for choice in [
+            LanguageChoice::Auto,
+            LanguageChoice::English,
+            LanguageChoice::Japanese,
+        ] {
+            assert_eq!(LanguageChoice::from_index(choice.to_index()), choice);
+        }
+        assert_eq!(LanguageChoice::from_index(-1), LanguageChoice::Auto);
+        assert_eq!(LanguageChoice::from_index(99), LanguageChoice::Auto);
+    }
+
+    #[test]
+    fn language_registry_value_parsing() {
+        for v in ["en", "EN", "english"] {
+            assert_eq!(
+                LanguageChoice::from_registry_value(v),
+                LanguageChoice::English
+            );
+        }
+        for v in ["ja", "JA", "japanese", "jp"] {
+            assert_eq!(
+                LanguageChoice::from_registry_value(v),
+                LanguageChoice::Japanese
+            );
+        }
+        for v in ["", "fr", "auto"] {
+            assert_eq!(LanguageChoice::from_registry_value(v), LanguageChoice::Auto);
+        }
+    }
 }

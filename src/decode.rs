@@ -4,12 +4,12 @@
 //! `image` crate's `ImageReader`, which auto-detects format from
 //! magic bytes and enforces pre-decode dimension/allocation limits.
 //!
-//! **JXL** (JPEG XL) is gated behind the `jxl` Cargo feature. When
-//! enabled, decoding uses `jxl-oxide` — a pure-Rust JPEG XL decoder
-//! — via its `image` integration. Disabled by default because it
-//! adds ~2.3 MB to the DLL for a format that is not yet widely
-//! deployed. Build with `cargo build --release --features jxl` to
-//! enable.
+//! **JXL** (JPEG XL) goes through `jxl-image-rs-integration`, which
+//! adapts the pure-Rust `jxl` decoder (jxl-rs) to the `image`
+//! crate's `ImageDecoder` trait. That is the same decoder Chrome and
+//! Firefox ship. It lives behind the `jxl` Cargo feature, which is
+//! on by default; `--no-default-features` drops it and saves ~2.3 MB
+//! of DLL.
 //!
 //! **AVIF / HEIC** are intentionally not supported. Both require C
 //! library dependencies (`libavif`, `libheif`) that conflict with
@@ -105,7 +105,7 @@ fn try_decode_jpeg_scaled(
         return Ok(None);
     }
     use image::{ImageBuffer, Luma, Rgb};
-    use jpeg_decoder::{Decoder, PixelFormat};
+    use jpeg_decoder::{CodingProcess, Decoder, PixelFormat};
 
     let mut decoder = Decoder::new(Cursor::new(bytes));
     decoder.read_info()?;
@@ -148,6 +148,26 @@ fn try_decode_jpeg_scaled(
         );
     }
 
+    // Progressive frames are the exception to "scaling shrinks the
+    // cost": jpeg-decoder keeps every DCT coefficient of the unscaled
+    // image (one i16 per sample) and allocates that as soon as it sees
+    // the first scan header. Hand those to the `image` crate, which
+    // enforces `MAX_IMAGE_ALLOC` on its own allocations.
+    if info.coding_process == CodingProcess::DctProgressive {
+        let components = match info.pixel_format {
+            PixelFormat::L8 | PixelFormat::L16 => 1u64,
+            PixelFormat::RGB24 => 3,
+            PixelFormat::CMYK32 => 4,
+        };
+        let coefficient_bytes = (src_w as u64)
+            .saturating_mul(src_h as u64)
+            .saturating_mul(components)
+            .saturating_mul(2);
+        if coefficient_bytes > limits::MAX_IMAGE_ALLOC {
+            return Ok(None);
+        }
+    }
+
     let pixels = decoder.decode()?;
 
     let img = match info.pixel_format {
@@ -185,7 +205,7 @@ fn decode_via_image_crate(bytes: &[u8]) -> Result<DynamicImage, Box<dyn Error>> 
 
 #[cfg(feature = "jxl")]
 fn decode_jxl(bytes: &[u8]) -> Result<DynamicImage, Box<dyn Error>> {
-    use jxl_oxide::integration::JxlDecoder;
+    use jxl_image_rs_integration::JxlDecoder;
 
     let decoder = JxlDecoder::new(Cursor::new(bytes))?;
     let (w, h) = decoder.dimensions();

@@ -59,6 +59,26 @@ pub fn from_rgba(img: &image::RgbaImage) -> Result<HBITMAP> {
     Ok(hbmp)
 }
 
+/// Composite `img` onto an opaque `background` (RGB), leaving every
+/// pixel fully opaque.
+///
+/// For bitmaps that are drawn with a plain `BitBlt`, which copies the
+/// colour channels and ignores alpha. A premultiplied bitmap blitted
+/// that way shows transparent areas as black; flattened first, they
+/// show the background instead.
+pub fn flatten_onto(img: &mut image::RgbaImage, background: [u8; 3]) {
+    for px in img.pixels_mut() {
+        let a = px.0[3];
+        if a == 255 {
+            continue;
+        }
+        for (c, bg) in px.0[..3].iter_mut().zip(background) {
+            *c = premul(*c, a) + premul(bg, 255 - a);
+        }
+        px.0[3] = 255;
+    }
+}
+
 /// Integer premultiply: `(c * a + 127) / 255`, rounded.
 #[inline]
 fn premul(c: u8, a: u8) -> u8 {
@@ -85,6 +105,24 @@ mod tests {
                 let _ = DeleteObject(HGDIOBJ(self.0.0));
             }
         }
+    }
+
+    #[test]
+    fn flatten_onto_shows_the_background_through_transparency() {
+        let mut img = image::RgbaImage::new(4, 1);
+        img.put_pixel(0, 0, Rgba([10, 20, 30, 255])); // opaque: untouched
+        img.put_pixel(1, 0, Rgba([10, 20, 30, 0])); // clear: background
+        img.put_pixel(2, 0, Rgba([0, 0, 0, 128])); // half black over white
+        img.put_pixel(3, 0, Rgba([255, 255, 255, 128])); // half white over white
+        flatten_onto(&mut img, [255, 255, 255]);
+
+        assert_eq!(img.get_pixel(0, 0).0, [10, 20, 30, 255]);
+        assert_eq!(img.get_pixel(1, 0).0, [255, 255, 255, 255]);
+        let half = img.get_pixel(2, 0).0;
+        assert_eq!(half[3], 255);
+        assert!((126..=128).contains(&half[0]), "got {half:?}");
+        // Rounding in the two halves must not overflow or darken white.
+        assert_eq!(img.get_pixel(3, 0).0, [255, 255, 255, 255]);
     }
 
     #[test]

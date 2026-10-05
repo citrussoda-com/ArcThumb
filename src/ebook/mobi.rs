@@ -46,6 +46,19 @@ pub fn try_extract_cover(bytes: &[u8]) -> Option<(String, Vec<u8>)> {
     let owned = bytes.to_vec();
     let mobi = Mobi::new(&owned).ok()?;
 
+    // The record table is read from the file and the `mobi` crate
+    // slices the content with those offsets unchecked, so a truncated
+    // download panics inside it. Bail out before asking for records.
+    if mobi
+        .metadata
+        .records
+        .records
+        .iter()
+        .any(|record| record.offset as usize > owned.len())
+    {
+        return None;
+    }
+
     // Strategy 1: explicit EXTH 201 cover hint.
     if let Some(cover) = extract_via_exth(&mobi) {
         return Some(cover);

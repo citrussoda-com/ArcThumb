@@ -47,7 +47,9 @@ No pressure. Starring the repo or sending a clear bug report is worth just as mu
 
 ### Image formats inside archives
 
-JPEG, PNG, GIF, BMP, TIFF, ICO, and WebP. Each format can be individually enabled or disabled in the configuration GUI. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
+JPEG, PNG, GIF, BMP, TIFF, ICO, WebP, and JPEG XL. Each format can be individually enabled or disabled in the configuration GUI. AVIF, HEIC, and SVG are not supported yet, mostly because their reference decoders pull in heavy C dependencies.
+
+JPEG XL decoding uses [jxl-rs](https://github.com/libjxl/jxl-rs), the pure-Rust decoder from the JPEG XL project that Chrome and Firefox also ship. It is compiled in by default and costs about 2.3 MB of DLL; `cargo build --release --no-default-features` leaves it out.
 
 ## Installing
 
@@ -61,20 +63,21 @@ Open **ArcThumb Configuration** from the Start menu.
 
 ![ArcThumb Configuration dialog with extension toggles, sort order, cover preference and the Regenerate thumbnails button](assets/screenshot.png)
 
-- **Enabled extensions** turns the thumbnail provider on or off per file extension.
-- **Image formats used for thumbnails** chooses which image formats (JPEG, PNG, GIF, BMP, TIFF, WebP, ICO) are eligible when picking a thumbnail from inside an archive. Disabling a format causes ArcThumb to skip files with that extension. This setting does not affect ebooks (EPUB, FB2, MOBI), which use their own metadata to locate the cover.
+- **Enabled extensions** turns ArcThumb on or off per file extension, for both the thumbnail and the preview pane. If another program's handler was registered for an extension, ArcThumb puts it back when you turn that extension off or uninstall.
+- **Image formats used for thumbnails** chooses which image formats (JPEG, PNG, GIF, BMP, TIFF, WebP, ICO, JPEG XL) are eligible when picking a thumbnail from inside an archive. Disabling a format causes ArcThumb to skip files with that extension. This setting does not affect ebooks (EPUB, FB2, MOBI), which use their own metadata to locate the cover.
 - **Sort order** decides which image counts as "the first one" inside an archive. Natural sort treats `page2.jpg` as smaller than `page10.jpg`. Alphabetical does the opposite. Natural is the default and is usually what you want for comics.
 - **Cover image** controls how ArcThumb treats files named `cover.*`, `folder.*`, `thumb.*`, `thumbnail.*`, or `front.*` (matched without regard to case). *Use cover if present, else first page* is the default: it picks one of those names when the archive has one and otherwise falls back to sort order. *Cover only* uses one of those names and shows no thumbnail at all when none exists, so an unrelated ZIP that happens to contain a stray image keeps the plain archive icon instead of borrowing it as a cover. *Always use first page* ignores the names and takes the first image by sort order.
-- **Enable preview pane** is a single switch that registers or unregisters the `IPreviewHandler` for every supported extension at once.
+- **Enable preview pane** is a single switch that registers or unregisters the `IPreviewHandler` for every enabled extension at once.
 - **Mark archives with a coloured border** draws a frame around the thumbnail, coloured by format family (one colour for compressed archives, another for ebooks). It makes an archive cover easy to tell apart from a plain image.
 - **Mark archives with a format label** bakes a small `CBZ` / `EPUB` / … tag into the bottom-right corner. The label uses the file's extension when ArcThumb can read it and otherwise falls back to the detected format, so a `.cbz` reads "CBZ" but a renamed archive still gets a sensible tag. The label is dropped on very small icons where it would be unreadable; the border stays.
-- **Language** is English or Japanese. The first run picks one based on `GetUserDefaultLocaleName`; afterwards it lives in `HKCU\Software\ArcThumb\Language`.
+- **Show the overlay on these file types** picks which extensions get the border and label. Every extension is ticked by default. Untick one to leave its thumbnails bare, for example `.mobi` and `.azw` when another app already puts its own badge on them. The list only narrows the two options above and is greyed out while both are off.
+- **Language** is Automatic, English or Japanese. Automatic follows the Windows display language. Picking one stores it in `HKCU\Software\ArcThumb\Language`, and the change shows up the next time the window is opened.
 
 Both overlay options are off by default. The plain cover thumbnails shown at the top of this page are what you get out of the box; turning the overlay on changes how every archive thumbnail looks:
 
 ![The same Explorer folder with the identification overlay enabled: each archive has a format-coloured border and a corner label such as ZIP, RAR, or EPUB](assets/explorer_with_overlay.png)
 
-Because Explorer caches the rendered bitmap, a new overlay setting only takes effect once the cached thumbnails are rebuilt. Use **Regenerate thumbnails** after changing either toggle.
+Because Explorer caches the rendered bitmap, a new overlay setting only takes effect once the cached thumbnails are rebuilt. Use **Regenerate thumbnails** after changing any of them.
 
 Apply takes effect immediately. There is no service to restart.
 

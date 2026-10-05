@@ -85,6 +85,22 @@ pub const EXTENSIONS: &[&str] = &[
     ".azw3",
 ];
 
+/// Extensions bound by every build that predates the `KnownExtensions`
+/// value. An install with no recorded list is assumed to have known
+/// exactly these. **Frozen**: new formats go in [`EXTENSIONS`] only.
+pub const PRE_TRACKING_EXTENSIONS: &[&str] = &[
+    ".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7", ".cbt", ".epub", ".fb2", ".mobi", ".azw",
+    ".azw3",
+];
+
+/// Value in a `.ext\ShellEx\{IID}` key holding the CLSID that was
+/// bound there before ArcThumb took the slot.
+const PREVIOUS_HANDLER_VALUE: &str = "ArcThumbPrevious";
+
+/// Value on the thumbnail CLSID key holding the space-separated
+/// extension list the installed build knew about.
+const KNOWN_EXTENSIONS_VALUE: &str = "KnownExtensions";
+
 /// Production parent key for shell extension registrations.
 const CLASSES_BASE: &str = "Software\\Classes";
 
@@ -208,18 +224,68 @@ fn unregister_clsid_at(root: &RegKey, clsid_root: &str) -> io::Result<()> {
     }
 }
 
+/// The CLSID bound in a ShellEx slot, if the key exists and names one.
+fn bound_handler(key: &RegKey) -> Option<String> {
+    key.get_value::<String, _>("")
+        .ok()
+        .filter(|v| !v.is_empty())
+}
+
+/// Bind `clsid_str` in a ShellEx slot. A slot holds one handler, so if
+/// another program's is already there it is remembered in
+/// [`PREVIOUS_HANDLER_VALUE`] and put back by
+/// [`unregister_extension_at`].
 fn register_extension_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> io::Result<()> {
     let (key, _) = root.create_subkey(shellex_path)?;
+    if let Some(other) = bound_handler(&key).filter(|v| !v.eq_ignore_ascii_case(clsid_str)) {
+        key.set_value(PREVIOUS_HANDLER_VALUE, &other)?;
+    }
     key.set_value("", &clsid_str.to_string())?;
     Ok(())
 }
 
-fn unregister_extension_at(root: &RegKey, shellex_path: &str) -> io::Result<()> {
-    match root.delete_subkey_all(shellex_path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+/// Undo [`register_extension_at`]. Only a slot that still names
+/// `clsid_str` is touched: the handler that was there before comes
+/// back, or the key goes away if there was none. A slot some other
+/// program has taken over since is left alone.
+fn unregister_extension_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> io::Result<()> {
+    let key = match root.open_subkey_with_flags(shellex_path, KEY_READ | KEY_WRITE) {
+        Ok(key) => key,
+        // NotFound is idempotent: the binding is already gone.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let previous = key.get_value::<String, _>(PREVIOUS_HANDLER_VALUE).ok();
+
+    if bound_handler(&key).is_some_and(|v| !v.eq_ignore_ascii_case(clsid_str)) {
+        // Not ours any more. The remembered handler is stale too.
+        if previous.is_some() {
+            key.delete_value(PREVIOUS_HANDLER_VALUE)?;
+        }
+        return Ok(());
     }
+
+    match previous {
+        Some(previous) => {
+            key.set_value("", &previous)?;
+            key.delete_value(PREVIOUS_HANDLER_VALUE)
+        }
+        None => {
+            drop(key);
+            match root.delete_subkey_all(shellex_path) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        }
+    }
+}
+
+/// True iff the ShellEx slot exists and names `clsid_str`.
+fn is_extension_bound_at(root: &RegKey, shellex_path: &str, clsid_str: &str) -> bool {
+    root.open_subkey(shellex_path)
+        .ok()
+        .and_then(|key| bound_handler(&key))
+        .is_some_and(|v| v.eq_ignore_ascii_case(clsid_str))
 }
 
 fn is_subkey_present(root: &RegKey, path: &str) -> bool {
@@ -293,16 +359,25 @@ pub fn register_extension(scope: Scope, ext: &str) -> io::Result<()> {
     )
 }
 
-/// Remove the ShellEx binding for a single extension. No error if
-/// the key is already gone.
+/// Remove our ShellEx binding for a single extension, restoring the
+/// handler it replaced if there was one. No error if the key is
+/// already gone or now belongs to another program.
 pub fn unregister_extension(scope: Scope, ext: &str) -> io::Result<()> {
-    unregister_extension_at(&scope.root_key(), &THUMBNAIL.ext_shellex_path(ext))
+    unregister_extension_at(
+        &scope.root_key(),
+        &THUMBNAIL.ext_shellex_path(ext),
+        CLSID_STR,
+    )
 }
 
-/// True iff the ShellEx IID subkey currently exists for this extension
-/// in the given scope.
+/// True iff this extension's thumbnail slot in the given scope names
+/// our CLSID. A slot bound to another program's handler is not ours.
 pub fn is_extension_registered(scope: Scope, ext: &str) -> bool {
-    is_subkey_present(&scope.root_key(), &THUMBNAIL.ext_shellex_path(ext))
+    is_extension_bound_at(
+        &scope.root_key(),
+        &THUMBNAIL.ext_shellex_path(ext),
+        CLSID_STR,
+    )
 }
 
 /// True iff the CLSID's `InprocServer32` subkey exists in the given
@@ -312,6 +387,33 @@ pub fn is_clsid_registered(scope: Scope) -> bool {
         &scope.root_key(),
         &format!("{}\\InprocServer32", THUMBNAIL.clsid_root()),
     )
+}
+
+/// Record, on the thumbnail CLSID key, the extension list this build
+/// knows about. The next `--install` reads it back to tell "the user
+/// switched this extension off" (known, binding absent) from "this
+/// extension is new in the build being installed" (not known yet).
+/// Lives under the CLSID key so uninstall removes it with the rest.
+pub fn write_known_extensions(scope: Scope) -> io::Result<()> {
+    write_known_extensions_at(&scope.root_key(), &THUMBNAIL.clsid_root())
+}
+
+/// The list written by [`write_known_extensions`], or `None` when the
+/// value is missing (nothing installed, or installed by a build that
+/// predates it).
+pub fn read_known_extensions(scope: Scope) -> Option<Vec<String>> {
+    read_known_extensions_at(&scope.root_key(), &THUMBNAIL.clsid_root())
+}
+
+fn write_known_extensions_at(root: &RegKey, clsid_root: &str) -> io::Result<()> {
+    let (key, _) = root.create_subkey(clsid_root)?;
+    key.set_value(KNOWN_EXTENSIONS_VALUE, &EXTENSIONS.join(" "))
+}
+
+fn read_known_extensions_at(root: &RegKey, clsid_root: &str) -> Option<Vec<String>> {
+    let key = root.open_subkey(clsid_root).ok()?;
+    let list: String = key.get_value(KNOWN_EXTENSIONS_VALUE).ok()?;
+    Some(list.split_whitespace().map(str::to_string).collect())
 }
 
 /// Read back `HK??\Software\Classes\CLSID\{CLSID}\InprocServer32\(Default)`.
@@ -353,7 +455,11 @@ pub fn register_preview_extension(scope: Scope, ext: &str) -> io::Result<()> {
 
 /// Remove the preview-handler ShellEx binding for an extension.
 pub fn unregister_preview_extension(scope: Scope, ext: &str) -> io::Result<()> {
-    unregister_extension_at(&scope.root_key(), &PREVIEW.ext_shellex_path(ext))
+    unregister_extension_at(
+        &scope.root_key(),
+        &PREVIEW.ext_shellex_path(ext),
+        PREVIEW_CLSID_STR,
+    )
 }
 
 /// True iff the preview-handler `InprocServer32` subkey exists in the
@@ -553,7 +659,7 @@ mod tests {
         let val: String = key.get_value("").expect("read default value");
         assert_eq!(val, CLSID_STR);
 
-        unregister_extension_at(&hkcu(), &path).expect("unregister");
+        unregister_extension_at(&hkcu(), &path, CLSID_STR).expect("unregister");
         assert!(!is_subkey_present(&hkcu(), &path));
     }
 
@@ -621,11 +727,107 @@ mod tests {
     }
 
     #[test]
+    fn known_extensions_roundtrip_and_survive_reregistration() {
+        let sandbox = unique_sandbox("known_exts");
+        let _guard = SandboxGuard(sandbox.clone());
+        let clsid_root = format!("{sandbox}\\{{TEST-CLSID}}");
+
+        // Missing key and missing value both read as "not recorded".
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+        let dll_path = std::path::PathBuf::from(r"C:\fake\arcthumb.dll");
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &THUMBNAIL).expect("register");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+
+        write_known_extensions_at(&hkcu(), &clsid_root).expect("write");
+        let read_back = read_known_extensions_at(&hkcu(), &clsid_root).expect("read back");
+        assert_eq!(read_back, EXTENSIONS);
+
+        // An upgrade rewrites the CLSID key in place; the list stays.
+        register_clsid_at(&hkcu(), &clsid_root, &dll_path, &THUMBNAIL).expect("re-register");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_some());
+
+        // Uninstall takes it away with the key.
+        unregister_clsid_at(&hkcu(), &clsid_root).expect("unregister");
+        assert!(read_known_extensions_at(&hkcu(), &clsid_root).is_none());
+    }
+
+    #[test]
+    fn pre_tracking_extensions_are_all_still_supported() {
+        for ext in PRE_TRACKING_EXTENSIONS {
+            assert!(EXTENSIONS.contains(ext), "{ext} dropped from EXTENSIONS");
+        }
+    }
+
+    const OTHER_CLSID: &str = "{11111111-2222-3333-4444-555555555555}";
+
+    fn slot_default(path: &str) -> Option<String> {
+        hkcu()
+            .open_subkey(path)
+            .ok()
+            .and_then(|k| bound_handler(&k))
+    }
+
+    #[test]
+    fn registering_over_another_handler_restores_it_on_unregister() {
+        let sandbox = unique_sandbox("takeover");
+        let _guard = SandboxGuard(sandbox.clone());
+        let path = ext_shellex_path_under(&sandbox, ".epub", THUMBNAIL.iid_shellex);
+
+        // Another program got there first.
+        let (key, _) = hkcu().create_subkey(&path).unwrap();
+        key.set_value("", &OTHER_CLSID).unwrap();
+        assert!(!is_extension_bound_at(&hkcu(), &path, CLSID_STR));
+
+        register_extension_at(&hkcu(), &path, CLSID_STR).expect("register");
+        assert!(is_extension_bound_at(&hkcu(), &path, CLSID_STR));
+        // Registering twice must not overwrite the remembered handler
+        // with our own CLSID.
+        register_extension_at(&hkcu(), &path, CLSID_STR).expect("register again");
+
+        unregister_extension_at(&hkcu(), &path, CLSID_STR).expect("unregister");
+        assert_eq!(slot_default(&path).as_deref(), Some(OTHER_CLSID));
+        let key = hkcu().open_subkey(&path).unwrap();
+        assert!(
+            key.get_value::<String, _>(PREVIOUS_HANDLER_VALUE).is_err(),
+            "the backup value is removed once restored"
+        );
+    }
+
+    #[test]
+    fn unregister_leaves_a_slot_another_handler_took_over() {
+        let sandbox = unique_sandbox("taken");
+        let _guard = SandboxGuard(sandbox.clone());
+        let path = ext_shellex_path_under(&sandbox, ".cbz", THUMBNAIL.iid_shellex);
+
+        register_extension_at(&hkcu(), &path, CLSID_STR).expect("register");
+        // Another program installs afterwards and takes the slot.
+        let key = hkcu()
+            .open_subkey_with_flags(&path, KEY_READ | KEY_WRITE)
+            .unwrap();
+        key.set_value("", &OTHER_CLSID).unwrap();
+        drop(key);
+
+        assert!(!is_extension_bound_at(&hkcu(), &path, CLSID_STR));
+        unregister_extension_at(&hkcu(), &path, CLSID_STR).expect("unregister");
+        assert_eq!(slot_default(&path).as_deref(), Some(OTHER_CLSID));
+    }
+
+    #[test]
+    fn bound_check_ignores_clsid_case() {
+        let sandbox = unique_sandbox("case");
+        let _guard = SandboxGuard(sandbox.clone());
+        let path = ext_shellex_path_under(&sandbox, ".zip", THUMBNAIL.iid_shellex);
+        let (key, _) = hkcu().create_subkey(&path).unwrap();
+        key.set_value("", &CLSID_STR.to_ascii_lowercase()).unwrap();
+        assert!(is_extension_bound_at(&hkcu(), &path, CLSID_STR));
+    }
+
+    #[test]
     fn unregister_missing_extension_is_noop() {
         let sandbox = unique_sandbox("missing_ext");
         let _guard = SandboxGuard(sandbox.clone());
         let path = ext_shellex_path_under(&sandbox, ".doesnotexist", THUMBNAIL.iid_shellex);
-        unregister_extension_at(&hkcu(), &path).expect("noop unregister");
+        unregister_extension_at(&hkcu(), &path, CLSID_STR).expect("noop unregister");
     }
 
     #[test]
@@ -665,7 +867,7 @@ mod tests {
 
             for ext in EXTENSIONS {
                 let path = ext_shellex_path_under(&sandbox, ext, handler.iid_shellex);
-                unregister_extension_at(&hkcu(), &path).expect(ext);
+                unregister_extension_at(&hkcu(), &path, handler.clsid_str).expect(ext);
                 assert!(
                     !is_subkey_present(&hkcu(), &path),
                     "{ext} still present after unregister"
@@ -690,7 +892,7 @@ mod tests {
         let val: String = key.get_value("").expect("read default");
         assert_eq!(val, PREVIEW_CLSID_STR);
 
-        unregister_extension_at(&hkcu(), &path).expect("unregister");
+        unregister_extension_at(&hkcu(), &path, PREVIEW_CLSID_STR).expect("unregister");
         assert!(!is_subkey_present(&hkcu(), &path));
     }
 }

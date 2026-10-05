@@ -12,14 +12,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use arcthumb::elevation;
+use arcthumb::registry::Scope;
 use arcthumb::settings::{SUPPORTED_IMAGE_EXTS, Settings, SortOrder};
 use slint::{ComponentHandle, SharedString, Timer};
 
-use crate::apply::{self, RealRegistryOps};
+use crate::apply::{self, ApplyAction, RealRegistryOps};
 use crate::cache;
+use crate::cli;
 use crate::dialogs;
+use crate::elevate::{self, Elevated};
 use crate::extension_model::ExtensionModel;
-use crate::locale::{self, Strings};
+use crate::locale::{self, LanguageChoice, Strings};
 use crate::message_box;
 use crate::state::{self, EXT_COUNT, UiModel};
 use crate::update;
@@ -56,6 +60,9 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // one-way binding would have been severed by the reset's assignment.
     slint::platform::update_timers_and_animations();
     push_model(&window, &initial_model);
+    // Same ordering constraint as push_model: the language dropdown is
+    // a ComboBox whose model was just localized.
+    window.set_language_index(locale::language_override().to_index());
     let state = Rc::new(RefCell::new(initial_model));
 
     // OK
@@ -133,10 +140,13 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
     // self-manages: do NOT use `Timer::default().start(...)` here,
     // because that returns an owned `Timer` whose `Drop` cancels the
     // timer immediately when the value goes out of scope.
-    if let Some(ver) = update::should_show_donation() {
+    let donation_version = update::should_show_donation();
+    // Recorded on every launch, prompt or not: the next launch compares
+    // against it to tell whether the binary was updated in between.
+    update::record_run_version();
+    if let Some(ver) = donation_version {
         Timer::single_shot(Duration::ZERO, move || {
             dialogs::show_donation_dialog(&ver, strings);
-            update::record_donation_shown();
         });
     }
 
@@ -152,14 +162,16 @@ pub fn run_gui() -> Result<(), slint::PlatformError> {
 // Extension-list bundle
 // =============================================================================
 
-/// Both toggle lists ArcThumb exposes in the GUI: the per-archive
-/// shell registration list and the per-image-format thumbnail
-/// eligibility list. Bundled so `run_gui` doesn't have to clone and
-/// pass two `ExtensionModel`s through every callback.
+/// The toggle lists ArcThumb exposes in the GUI: the per-archive
+/// shell registration list, the per-image-format thumbnail
+/// eligibility list, and the per-archive overlay list. Bundled so
+/// `run_gui` doesn't have to clone and pass each `ExtensionModel`
+/// through every callback.
 #[derive(Clone)]
 struct ExtensionLists {
     archive: ExtensionModel,
     image: ExtensionModel,
+    overlay: ExtensionModel,
 }
 
 impl ExtensionLists {
@@ -170,21 +182,31 @@ impl ExtensionLists {
                 SUPPORTED_IMAGE_EXTS,
                 &m.image_ext_enabled,
             ),
+            overlay: ExtensionModel::from_enabled(&state::overlay_ext_mask_to_vec(
+                m.settings.overlay_exts_mask,
+            )),
         }
     }
 
     fn bind(&self, window: &MainWindow) {
         window.set_extensions(self.archive.as_model());
         window.set_image_extensions(self.image.as_model());
+        window.set_overlay_extensions(self.overlay.as_model());
         let archive = self.archive.clone();
         window.on_toggle_extension(move |i| archive.toggle(i as usize));
         let image = self.image.clone();
         window.on_toggle_image_extension(move |i| image.toggle(i as usize));
+        let overlay = self.overlay.clone();
+        window.on_toggle_overlay_extension(move |i| overlay.toggle(i as usize));
     }
 
     fn refresh_from(&self, m: &UiModel) {
         self.archive.replace_enabled(&m.ext_enabled);
         self.image.replace_enabled(&m.image_ext_enabled);
+        self.overlay
+            .replace_enabled(&state::overlay_ext_mask_to_vec(
+                m.settings.overlay_exts_mask,
+            ));
     }
 }
 
@@ -200,6 +222,9 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_menu_help_check_updates(SharedString::from(s.menu_help_check_updates));
     window.set_menu_help_donate(SharedString::from(s.menu_help_donate));
     window.set_menu_help_about(SharedString::from(s.menu_help_about));
+    window.set_tab_files(SharedString::from(s.tab_files));
+    window.set_tab_thumbnail(SharedString::from(s.tab_thumbnail));
+    window.set_tab_display(SharedString::from(s.tab_display));
     window.set_group_extensions(SharedString::from(s.group_extensions));
     window.set_group_image_exts(SharedString::from(s.group_image_exts));
     window.set_group_sort(SharedString::from(s.group_sort));
@@ -209,10 +234,16 @@ fn apply_strings(window: &MainWindow, s: &Strings) {
     window.set_cover_prefer_label(SharedString::from(s.cover_prefer));
     window.set_cover_only_label(SharedString::from(s.cover_only));
     window.set_cover_ignore_label(SharedString::from(s.cover_ignore));
-    window.set_group_other(SharedString::from(s.group_other));
+    window.set_group_overlay(SharedString::from(s.group_overlay));
+    window.set_regen_hint(SharedString::from(s.regen_hint));
+    window.set_group_preview(SharedString::from(s.group_preview));
+    window.set_group_language(SharedString::from(s.group_language));
+    window.set_language_auto_label(SharedString::from(s.language_auto));
+    window.set_language_hint(SharedString::from(s.language_hint));
     window.set_enable_preview_label(SharedString::from(s.cb_enable_preview));
     window.set_overlay_border_label(SharedString::from(s.cb_overlay_border));
     window.set_overlay_label_label(SharedString::from(s.cb_overlay_label));
+    window.set_overlay_exts_caption(SharedString::from(s.overlay_exts_caption));
     window.set_btn_ok(SharedString::from(s.btn_ok));
     window.set_btn_cancel(SharedString::from(s.btn_cancel));
     window.set_btn_apply(SharedString::from(s.btn_apply));
@@ -251,6 +282,7 @@ fn collect_from_ui(
         enabled_image_exts_mask: image_mask,
         overlay_border: window.get_overlay_border(),
         overlay_label: window.get_overlay_label(),
+        overlay_exts_mask: state::overlay_ext_vec_to_mask(&lists.overlay.enabled_vec()),
     };
     (settings, ext_enabled, window.get_enable_preview())
 }
@@ -275,7 +307,27 @@ fn apply_changes(
     );
     // Mutate whichever hive the loaded model came from, so an Apply
     // on a per-machine install doesn't silently bifurcate into HKCU.
-    let outcome = apply::apply_plan(&plan, &RealRegistryOps::new(state.borrow().scope));
+    let scope = state.borrow().scope;
+    let ops = RealRegistryOps::new(scope);
+    let (shell, local): (Vec<ApplyAction>, Vec<ApplyAction>) =
+        plan.into_iter().partition(ApplyAction::touches_shell);
+    // HKLM is read-only for this process unless it was started
+    // elevated. Settings live in HKCU and are saved here either way;
+    // the registration changes go to an elevated copy of the exe.
+    let needs_elevation =
+        scope == Scope::PerMachine && !shell.is_empty() && !elevation::is_elevated();
+    let mut elevated_ok = true;
+    let outcome = if needs_elevation {
+        let outcome = apply::apply_plan(&local, &ops);
+        if outcome.is_ok() {
+            elevated_ok = apply_shell_elevated(scope, &shell, strings);
+        }
+        outcome
+    } else {
+        let mut plan = local;
+        plan.extend(shell);
+        apply::apply_plan(&plan, &ops)
+    };
 
     if let Some(detail) = &outcome.settings_save_error {
         message_box::error(
@@ -300,12 +352,53 @@ fn apply_changes(
         );
     }
 
+    // The UI language is a preference of this tool, not part of the
+    // thumbnail settings or the shell registration, so it stays out of
+    // the apply plan. It takes effect on the next launch.
+    let language = LanguageChoice::from_index(window.get_language_index());
+    let mut language_ok = true;
+    if language != locale::language_override()
+        && let Err(e) = locale::set_language_override(language)
+    {
+        language_ok = false;
+        message_box::error(
+            strings.error_title,
+            &format!("{}\n\n{e}", strings.error_save),
+        );
+    }
+
     let reloaded = UiModel::load();
     push_model(window, &reloaded);
     lists.refresh_from(&reloaded);
     *state.borrow_mut() = reloaded;
 
-    outcome.is_ok()
+    outcome.is_ok() && elevated_ok && language_ok
+}
+
+/// Hand the registration changes to an elevated copy of this exe and
+/// report the result to the user. Returns `true` when they were
+/// applied.
+fn apply_shell_elevated(scope: Scope, shell: &[ApplyAction], strings: &Strings) -> bool {
+    let mut args = vec![
+        cli::APPLY_SHELL_FLAG.to_string(),
+        cli::scope_arg(scope).to_string(),
+    ];
+    args.extend(apply::shell_actions_to_args(shell));
+
+    let detail = match elevate::run_self_elevated(&args) {
+        Ok(Elevated::Exited(0)) => return true,
+        Ok(Elevated::Declined) => {
+            message_box::error(strings.error_title, strings.error_elevation_declined);
+            return false;
+        }
+        Ok(Elevated::Exited(code)) => format!("exit code {code}"),
+        Err(e) => e.to_string(),
+    };
+    message_box::error(
+        strings.error_title,
+        &format!("{}\n\n{detail}", strings.error_register),
+    );
+    false
 }
 
 // =============================================================================
@@ -413,6 +506,46 @@ mod tests {
             let (collected, _, _) = collect_from_ui(&window, &lists);
             assert!(collected.overlay_border, "border toggle round-trips");
             assert!(collected.overlay_label, "label toggle round-trips");
+        }
+
+        // ---- per-extension overlay list round-trips and toggles --
+        {
+            let window = MainWindow::new().expect("create MainWindow");
+            let all = arcthumb::settings::default_overlay_exts_mask();
+            let settings = Settings {
+                overlay_label: true,
+                overlay_exts_mask: all & !(1u32 << 9), // .mobi off
+                ..Settings::default()
+            };
+            let model = UiModel {
+                image_ext_enabled: state::image_ext_mask_to_vec(settings.enabled_image_exts_mask),
+                settings,
+                scope: arcthumb::registry::Scope::PerUser,
+                ext_enabled: [true; EXT_COUNT],
+                preview_enabled: false,
+            };
+            let lists = ExtensionLists::from_model(&model);
+            lists.bind(&window);
+            push_model(&window, &model);
+
+            let (collected, ext, _) = collect_from_ui(&window, &lists);
+            assert_eq!(collected, settings, "overlay list round-trips");
+
+            // Unticking .azw in the overlay grid changes the overlay
+            // mask only; the registration list is a separate model.
+            lists.overlay.toggle(10);
+            let (collected, ext_after, _) = collect_from_ui(&window, &lists);
+            assert_eq!(
+                collected.overlay_exts_mask,
+                all & !(1u32 << 9) & !(1u32 << 10),
+                ".mobi and .azw are off"
+            );
+            assert_eq!(ext_after, ext, "registration list is untouched");
+
+            // A reload from the registry snaps the grid back.
+            lists.refresh_from(&model);
+            let (collected, _, _) = collect_from_ui(&window, &lists);
+            assert_eq!(collected.overlay_exts_mask, settings.overlay_exts_mask);
         }
 
         // ---- push_then_collect_round_trips_alphabetical_no_cover
@@ -561,7 +694,15 @@ mod tests {
             assert_eq!(window.get_cover_prefer_label(), locale::EN.cover_prefer);
             assert_eq!(window.get_cover_only_label(), locale::EN.cover_only);
             assert_eq!(window.get_cover_ignore_label(), locale::EN.cover_ignore);
-            assert_eq!(window.get_group_other(), locale::EN.group_other);
+            assert_eq!(window.get_tab_files(), locale::EN.tab_files);
+            assert_eq!(window.get_tab_thumbnail(), locale::EN.tab_thumbnail);
+            assert_eq!(window.get_tab_display(), locale::EN.tab_display);
+            assert_eq!(window.get_group_preview(), locale::EN.group_preview);
+            assert_eq!(window.get_group_language(), locale::EN.group_language);
+            assert_eq!(window.get_language_auto_label(), locale::EN.language_auto);
+            assert_eq!(window.get_language_hint(), locale::EN.language_hint);
+            assert_eq!(window.get_group_overlay(), locale::EN.group_overlay);
+            assert_eq!(window.get_regen_hint(), locale::EN.regen_hint);
             assert_eq!(
                 window.get_enable_preview_label(),
                 locale::EN.cb_enable_preview
@@ -573,6 +714,10 @@ mod tests {
             assert_eq!(
                 window.get_overlay_label_label(),
                 locale::EN.cb_overlay_label
+            );
+            assert_eq!(
+                window.get_overlay_exts_caption(),
+                locale::EN.overlay_exts_caption
             );
             assert_eq!(window.get_btn_ok(), locale::EN.btn_ok);
             assert_eq!(window.get_btn_cancel(), locale::EN.btn_cancel);

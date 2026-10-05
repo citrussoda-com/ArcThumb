@@ -116,9 +116,43 @@ fn ext_label(file_ext: Option<&str>, allowed: &[&str], default: &str) -> String 
     }
 }
 
+/// The registered extension whose per-extension overlay toggle governs
+/// this thumbnail.
+///
+/// Follows the same rule as [`label_for`], so the checkbox that turns
+/// an overlay off is the one named after the label it would have
+/// shown. When the host gave us no file name, the container's generic
+/// extension stands in: a nameless ZIP answers to `.zip`, a nameless
+/// MOBI-family book to `.mobi`. TAR has only `.cbt` registered.
+fn toggle_ext(kind: ContentKind, file_ext: Option<&str>) -> &'static str {
+    match kind {
+        ContentKind::Epub => ".epub",
+        ContentKind::Fb2 => ".fb2",
+        ContentKind::Mobi => match file_ext {
+            Some("azw") => ".azw",
+            Some("azw3") => ".azw3",
+            _ => ".mobi",
+        },
+        ContentKind::Zip => match file_ext {
+            Some("cbz") => ".cbz",
+            _ => ".zip",
+        },
+        ContentKind::SevenZ => match file_ext {
+            Some("cb7") => ".cb7",
+            _ => ".7z",
+        },
+        ContentKind::Rar => match file_ext {
+            Some("cbr") => ".cbr",
+            _ => ".rar",
+        },
+        ContentKind::Tar => ".cbt",
+    }
+}
+
 /// Bake the enabled overlay cues into `img` in place.
 ///
-/// A no-op (and free) when both toggles are off, which is the default.
+/// A no-op (and free) when both toggles are off, which is the default,
+/// or when the overlay is switched off for this file's extension.
 pub fn apply_overlay(
     img: &mut RgbaImage,
     kind: ContentKind,
@@ -126,6 +160,9 @@ pub fn apply_overlay(
     settings: &Settings,
 ) {
     if !settings.overlay_border && !settings.overlay_label {
+        return;
+    }
+    if !settings.overlay_allowed_for(toggle_ext(kind, file_ext)) {
         return;
     }
 
@@ -479,6 +516,136 @@ mod tests {
             }
         }
         assert!(changed, "expected changes in the bottom-right quadrant");
+    }
+
+    // ----- per-extension toggle -------------------------------------------
+
+    /// Both cues on, with the overlay switched off for `exts`.
+    fn on_except(exts: &[&str]) -> Settings {
+        let mask = exts
+            .iter()
+            .fold(crate::settings::default_overlay_exts_mask(), |mask, ext| {
+                let i = crate::registry::EXTENSIONS
+                    .iter()
+                    .position(|e| e == ext)
+                    .expect("registered ext");
+                mask & !(1u32 << i)
+            });
+        Settings {
+            overlay_border: true,
+            overlay_label: true,
+            overlay_exts_mask: mask,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn toggle_ext_is_always_a_registered_extension() {
+        let kinds = [
+            ContentKind::Zip,
+            ContentKind::SevenZ,
+            ContentKind::Rar,
+            ContentKind::Tar,
+            ContentKind::Epub,
+            ContentKind::Fb2,
+            ContentKind::Mobi,
+        ];
+        let exts = [
+            None,
+            Some("zip"),
+            Some("cbz"),
+            Some("rar"),
+            Some("cbr"),
+            Some("7z"),
+            Some("cb7"),
+            Some("cbt"),
+            Some("epub"),
+            Some("fb2"),
+            Some("mobi"),
+            Some("azw"),
+            Some("azw3"),
+            Some("bin"),
+        ];
+        for kind in kinds {
+            for ext in exts {
+                let toggle = toggle_ext(kind, ext);
+                assert!(
+                    crate::registry::EXTENSIONS.contains(&toggle),
+                    "{kind:?}/{ext:?} resolved to {toggle}, which has no checkbox"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn toggle_ext_matches_the_label() {
+        // Whatever the label says, the same-named checkbox governs it.
+        // TAR is the exception: its label reads "TAR" without a name
+        // but only `.cbt` is registered.
+        let cases: &[(ContentKind, Option<&str>)] = &[
+            (ContentKind::Zip, Some("cbz")),
+            (ContentKind::Zip, Some("zip")),
+            (ContentKind::Zip, None),
+            (ContentKind::Zip, Some("bin")),
+            (ContentKind::SevenZ, Some("cb7")),
+            (ContentKind::SevenZ, None),
+            (ContentKind::Rar, Some("cbr")),
+            (ContentKind::Rar, None),
+            (ContentKind::Tar, Some("cbt")),
+            (ContentKind::Epub, Some("epub")),
+            (ContentKind::Fb2, Some("zip")),
+            (ContentKind::Mobi, None),
+            (ContentKind::Mobi, Some("mobi")),
+            (ContentKind::Mobi, Some("azw")),
+            (ContentKind::Mobi, Some("azw3")),
+        ];
+        for &(kind, ext) in cases {
+            let label = text_of(label_for(kind, ext));
+            assert_eq!(
+                toggle_ext(kind, ext),
+                format!(".{}", label.to_ascii_lowercase()),
+                "{kind:?}/{ext:?}"
+            );
+        }
+        assert_eq!(toggle_ext(ContentKind::Tar, None), ".cbt");
+    }
+
+    #[test]
+    fn disabled_extension_gets_no_overlay() {
+        let original = solid(256, 256, Rgba([10, 20, 30, 255]));
+        let settings = on_except(&[".mobi", ".azw"]);
+
+        for ext in [Some("mobi"), Some("azw"), None] {
+            let mut img = original.clone();
+            apply_overlay(&mut img, ContentKind::Mobi, ext, &settings);
+            assert_eq!(img, original, "{ext:?} must stay bare");
+        }
+
+        // The neighbours keep theirs: `.azw3` has its own checkbox, and
+        // other formats are untouched.
+        let mut img = original.clone();
+        apply_overlay(&mut img, ContentKind::Mobi, Some("azw3"), &settings);
+        assert_ne!(img, original, ".azw3 is still marked");
+        let mut img = original.clone();
+        apply_overlay(&mut img, ContentKind::Zip, Some("cbz"), &settings);
+        assert_ne!(img, original, ".cbz is still marked");
+    }
+
+    #[test]
+    fn disabled_extension_does_not_leak_across_a_shared_container() {
+        // `.zip` and `.cbz` are the same container but separate toggles.
+        let original = solid(256, 256, Rgba([10, 20, 30, 255]));
+        let settings = on_except(&[".cbz"]);
+
+        let mut img = original.clone();
+        apply_overlay(&mut img, ContentKind::Zip, Some("cbz"), &settings);
+        assert_eq!(img, original, ".cbz must stay bare");
+
+        for ext in [Some("zip"), None] {
+            let mut img = original.clone();
+            apply_overlay(&mut img, ContentKind::Zip, ext, &settings);
+            assert_ne!(img, original, "{ext:?} is still marked");
+        }
     }
 
     /// Render a montage of every group/label on a few backgrounds and

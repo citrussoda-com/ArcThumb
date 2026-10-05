@@ -5,11 +5,15 @@
 //! touching the real registry. [`RealCliOps`] is the thin production
 //! implementation that forwards to `arcthumb::registry`.
 //!
-//! Exit codes (consumed by the Inno Setup installer — keep stable):
+//! Exit codes (the Inno Setup installer checks `--install` for
+//! non-zero — keep stable):
 //! - `0` success
 //! - `2` arcthumb.dll not found (`--install` only)
 //! - `3` CLSID registration failed
 //! - `4` extension binding failed
+//! - `6` some registry entries could not be removed (`--uninstall` only)
+//! - `7` a registration change failed (`--apply-shell` only)
+//! - `8` unrecognised arguments
 //!
 //! (Exit code `5` — GUI init failure — lives in `main.rs`; it is not
 //! part of the CLI drivers.)
@@ -19,18 +23,76 @@ use std::path::{Path, PathBuf};
 
 use arcthumb::registry::{self, Scope};
 
+use crate::apply::{self, RealRegistryOps};
 use crate::dll_path;
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_DLL_NOT_FOUND: i32 = 2;
 pub const EXIT_CLSID_FAILED: i32 = 3;
 pub const EXIT_EXTENSION_FAILED: i32 = 4;
+pub const EXIT_UNINSTALL_INCOMPLETE: i32 = 6;
+pub const EXIT_APPLY_FAILED: i32 = 7;
+pub const EXIT_USAGE: i32 = 8;
+
+/// Flag that starts the elevated copy the GUI uses to change a
+/// per-machine registration. See [`run_apply_shell`].
+pub const APPLY_SHELL_FLAG: &str = "--apply-shell";
+
+/// Command-line spelling of a [`Scope`], shared by `--install --scope`
+/// and `--apply-shell`.
+pub fn scope_arg(scope: Scope) -> &'static str {
+    match scope {
+        Scope::PerUser => "user",
+        Scope::PerMachine => "machine",
+    }
+}
+
+pub fn parse_scope(arg: &str) -> Option<Scope> {
+    match arg {
+        "user" => Some(Scope::PerUser),
+        "machine" => Some(Scope::PerMachine),
+        _ => None,
+    }
+}
+
+/// Parse what follows `--install`: nothing, or `--scope user|machine`.
+/// `Ok(None)` means "pick the hive from this process's elevation".
+pub fn parse_install_args(args: &[String]) -> Result<Option<Scope>, ()> {
+    match args {
+        [] => Ok(None),
+        [flag, value] if flag == "--scope" => parse_scope(value).map(Some).ok_or(()),
+        _ => Err(()),
+    }
+}
+
+/// `--apply-shell <user|machine> <tokens…>`: perform the registration
+/// changes the GUI could not write itself. The tokens are the ones
+/// produced by [`apply::shell_actions_to_args`].
+pub fn run_apply_shell(args: &[String]) -> i32 {
+    let Some((scope, tokens)) = args.split_first() else {
+        return EXIT_USAGE;
+    };
+    let (Some(scope), Some(plan)) = (parse_scope(scope), apply::shell_actions_from_args(tokens))
+    else {
+        return EXIT_USAGE;
+    };
+    if apply::apply_plan(&plan, &RealRegistryOps::new(scope)).is_ok() {
+        EXIT_OK
+    } else {
+        EXIT_APPLY_FAILED
+    }
+}
 
 /// The side effects the CLI drivers need. Production uses
 /// [`RealCliOps`]; tests inject a recording mock.
 pub trait CliOps {
     fn resolve_dll_path(&self) -> Result<PathBuf, String>;
     fn current_scope(&self) -> Scope;
+    fn is_clsid_registered(&self, scope: Scope) -> bool;
+    fn is_extension_registered(&self, scope: Scope, ext: &'static str) -> bool;
+    fn is_preview_enabled(&self, scope: Scope) -> bool;
+    fn known_extensions(&self, scope: Scope) -> Option<Vec<String>>;
+    fn record_known_extensions(&self, scope: Scope) -> io::Result<()>;
     fn register_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()>;
     fn register_preview_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()>;
     fn register_extension(&self, scope: Scope, ext: &'static str) -> io::Result<()>;
@@ -50,6 +112,21 @@ impl CliOps for RealCliOps {
     }
     fn current_scope(&self) -> Scope {
         arcthumb::elevation::current_scope()
+    }
+    fn is_clsid_registered(&self, scope: Scope) -> bool {
+        registry::is_clsid_registered(scope)
+    }
+    fn is_extension_registered(&self, scope: Scope, ext: &'static str) -> bool {
+        registry::is_extension_registered(scope, ext)
+    }
+    fn is_preview_enabled(&self, scope: Scope) -> bool {
+        registry::is_preview_enabled(scope)
+    }
+    fn known_extensions(&self, scope: Scope) -> Option<Vec<String>> {
+        registry::read_known_extensions(scope)
+    }
+    fn record_known_extensions(&self, scope: Scope) -> io::Result<()> {
+        registry::write_known_extensions(scope)
     }
     fn register_clsid(&self, scope: Scope, dll_path: &Path) -> io::Result<()> {
         registry::register_clsid(scope, dll_path)
@@ -82,33 +159,76 @@ impl CliOps for RealCliOps {
 
 /// `--install`: write the full shell-extension registration.
 ///
-/// Hive is picked by elevation: HKLM when the process is elevated
-/// (admin Inno install mode), HKCU otherwise. This is what makes the
-/// shell extension load under High-Integrity Explorer in Windows
-/// Sandbox and enterprise lockdowns where HKCU CLSIDs are ignored.
+/// With no `--scope`, the hive is picked by elevation: HKLM when the
+/// process is elevated, HKCU otherwise. The installer passes the scope
+/// explicitly instead (see [`run_install_in`]).
 pub fn run_install(ops: &dyn CliOps) -> i32 {
+    run_install_in(ops, ops.current_scope())
+}
+
+/// `--install --scope <user|machine>`: register into the given hive.
+///
+/// The installer knows which mode the user chose and says so, because
+/// elevation alone gets it wrong: setup started with "Run as
+/// administrator" can still be told to install for the current user
+/// only, and the files then land in the user profile while an
+/// elevation-based guess would register them machine-wide. A
+/// per-machine registration is what makes the shell extension load
+/// under High-Integrity Explorer in Windows Sandbox and enterprise
+/// lockdowns where HKCU CLSIDs are ignored.
+pub fn run_install_in(ops: &dyn CliOps, scope: Scope) -> i32 {
     let dll_path = match ops.resolve_dll_path() {
         Ok(p) => p,
         Err(_) => return EXIT_DLL_NOT_FOUND,
     };
-    let scope = ops.current_scope();
+
+    // The installer runs `--install` on upgrades too. Read what the
+    // user had before writing anything, so an extension or the preview
+    // pane they switched off in the GUI stays off.
+    let upgrade = ops.is_clsid_registered(scope);
+    let known = ops.known_extensions(scope);
+    let was_known = |ext: &str| match &known {
+        Some(list) => list.iter().any(|k| k == ext),
+        None => registry::PRE_TRACKING_EXTENSIONS.contains(&ext),
+    };
+    // On an upgrade a missing binding means "switched off" only for an
+    // extension the previous build already offered. One that is new in
+    // this build was never offered, so it starts enabled.
+    let thumbnail_exts: Vec<&'static str> = registry::EXTENSIONS
+        .iter()
+        .copied()
+        .filter(|&ext| !upgrade || ops.is_extension_registered(scope, ext) || !was_known(ext))
+        .collect();
+    // The preview pane is one switch, and it covers the enabled
+    // extensions only.
+    let preview = !upgrade || ops.is_preview_enabled(scope);
+
     // Both COM classes (thumbnail provider + preview handler) are
-    // registered together by the installer so the user gets both
+    // registered together on a fresh install so the user gets both
     // features by default. The GUI's "Enable preview pane" checkbox
     // can later be unchecked to remove just the preview handler.
     if ops.register_clsid(scope, &dll_path).is_err() {
         return EXIT_CLSID_FAILED;
     }
-    if ops.register_preview_clsid(scope, &dll_path).is_err() {
+    if preview && ops.register_preview_clsid(scope, &dll_path).is_err() {
         return EXIT_CLSID_FAILED;
     }
     for &ext in registry::EXTENSIONS {
+        if !thumbnail_exts.contains(&ext) {
+            // Builds before this one left the preview handler bound to
+            // a switched-off extension. Best effort, like uninstall.
+            let _ = ops.unregister_preview_extension(scope, ext);
+            continue;
+        }
         if ops.register_extension(scope, ext).is_err() {
             return EXIT_EXTENSION_FAILED;
         }
-        if ops.register_preview_extension(scope, ext).is_err() {
+        if preview && ops.register_preview_extension(scope, ext).is_err() {
             return EXIT_EXTENSION_FAILED;
         }
+    }
+    if ops.record_known_extensions(scope).is_err() {
+        return EXIT_CLSID_FAILED;
     }
     // Tell Explorer to drop its icon/thumbnail cache so the freshly
     // registered handlers take effect without a reboot — this is what
@@ -121,17 +241,27 @@ pub fn run_install(ops: &dyn CliOps) -> i32 {
 /// switched modes between versions, or an old per-user install may
 /// still be lying around when a new per-machine install is being
 /// uninstalled.
+///
+/// A failure never stops the sweep, but it is reported: an entry that
+/// is already absent counts as removed, so any error here is a key
+/// that exists and could not be deleted (typically access denied on
+/// HKLM without elevation).
 pub fn run_uninstall(ops: &dyn CliOps) -> i32 {
+    let mut complete = true;
     for scope in Scope::ALL.iter().copied() {
         for &ext in registry::EXTENSIONS {
-            let _ = ops.unregister_extension(scope, ext);
-            let _ = ops.unregister_preview_extension(scope, ext);
+            complete &= ops.unregister_extension(scope, ext).is_ok();
+            complete &= ops.unregister_preview_extension(scope, ext).is_ok();
         }
-        let _ = ops.unregister_clsid(scope);
-        let _ = ops.unregister_preview_clsid(scope);
+        complete &= ops.unregister_clsid(scope).is_ok();
+        complete &= ops.unregister_preview_clsid(scope).is_ok();
     }
     ops.notify_assoc_changed();
-    EXIT_OK
+    if complete {
+        EXIT_OK
+    } else {
+        EXIT_UNINSTALL_INCOMPLETE
+    }
 }
 
 #[cfg(test)]
@@ -148,6 +278,15 @@ mod tests {
         calls: RefCell<Vec<String>>,
         fail_on: RefCell<Vec<String>>,
         notify_called: RefCell<bool>,
+        /// Registry state an earlier install left behind. `None` means
+        /// nothing is installed (the default).
+        previous: Option<PreviousInstall>,
+    }
+
+    struct PreviousInstall {
+        bound: Vec<&'static str>,
+        preview: bool,
+        known: Option<Vec<String>>,
     }
 
     impl MockCliOps {
@@ -158,7 +297,24 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 fail_on: RefCell::new(Vec::new()),
                 notify_called: RefCell::new(false),
+                previous: None,
             }
+        }
+
+        /// Pretend an install by a build that offered `known` is in
+        /// place, with only `bound` still ticked in the GUI.
+        fn upgrading_from(
+            mut self,
+            bound: &[&'static str],
+            preview: bool,
+            known: Option<&[&str]>,
+        ) -> Self {
+            self.previous = Some(PreviousInstall {
+                bound: bound.to_vec(),
+                preview,
+                known: known.map(|k| k.iter().map(|e| e.to_string()).collect()),
+            });
+            self
         }
 
         fn without_dll(mut self) -> Self {
@@ -201,6 +357,23 @@ mod tests {
         fn current_scope(&self) -> Scope {
             self.scope
         }
+        fn is_clsid_registered(&self, _scope: Scope) -> bool {
+            self.previous.is_some()
+        }
+        fn is_extension_registered(&self, _scope: Scope, ext: &'static str) -> bool {
+            self.previous
+                .as_ref()
+                .is_some_and(|p| p.bound.contains(&ext))
+        }
+        fn is_preview_enabled(&self, _scope: Scope) -> bool {
+            self.previous.as_ref().is_some_and(|p| p.preview)
+        }
+        fn known_extensions(&self, _scope: Scope) -> Option<Vec<String>> {
+            self.previous.as_ref().and_then(|p| p.known.clone())
+        }
+        fn record_known_extensions(&self, scope: Scope) -> io::Result<()> {
+            self.record(format!("record_known_extensions:{}", tag(scope)))
+        }
         fn register_clsid(&self, scope: Scope, _dll_path: &Path) -> io::Result<()> {
             self.record(format!("register_clsid:{}", tag(scope)))
         }
@@ -242,8 +415,10 @@ mod tests {
         // Both CLSIDs first, in thumbnail → preview order.
         assert_eq!(calls[0], "register_clsid:user");
         assert_eq!(calls[1], "register_preview_clsid:user");
-        // Then thumbnail + preview bindings for every extension.
-        assert_eq!(calls.len(), 2 + registry::EXTENSIONS.len() * 2);
+        // Then thumbnail + preview bindings for every extension, and
+        // the known-extension list last.
+        assert_eq!(calls.len(), 2 + registry::EXTENSIONS.len() * 2 + 1);
+        assert_eq!(calls.last().unwrap(), "record_known_extensions:user");
         for (i, &ext) in registry::EXTENSIONS.iter().enumerate() {
             assert_eq!(calls[2 + i * 2], format!("register_extension:user:{ext}"));
             assert_eq!(
@@ -261,6 +436,48 @@ mod tests {
             ops.calls.borrow().iter().all(|c| c.contains(":machine")),
             "every registration must hit the elevated hive"
         );
+    }
+
+    #[test]
+    fn install_with_an_explicit_scope_ignores_elevation() {
+        // Elevated setup, "install for me only".
+        let ops = MockCliOps::new().with_scope(Scope::PerMachine);
+        assert_eq!(run_install_in(&ops, Scope::PerUser), EXIT_OK);
+        assert!(ops.calls.borrow().iter().all(|c| c.contains(":user")));
+    }
+
+    #[test]
+    fn install_args_accept_only_an_optional_scope() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_install_args(&args(&[])), Ok(None));
+        assert_eq!(
+            parse_install_args(&args(&["--scope", "user"])),
+            Ok(Some(Scope::PerUser))
+        );
+        assert_eq!(
+            parse_install_args(&args(&["--scope", "machine"])),
+            Ok(Some(Scope::PerMachine))
+        );
+        assert!(parse_install_args(&args(&["--scope"])).is_err());
+        assert!(parse_install_args(&args(&["--scope", "all"])).is_err());
+        assert!(parse_install_args(&args(&["--scope", "user", "x"])).is_err());
+        assert!(parse_install_args(&args(&["user"])).is_err());
+    }
+
+    #[test]
+    fn scope_args_round_trip() {
+        for scope in [Scope::PerUser, Scope::PerMachine] {
+            assert_eq!(parse_scope(scope_arg(scope)), Some(scope));
+        }
+    }
+
+    #[test]
+    fn apply_shell_rejects_bad_arguments_before_touching_anything() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(run_apply_shell(&args(&[])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["everyone", "+.zip"])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["user", "+.exe"])), EXIT_USAGE);
+        assert_eq!(run_apply_shell(&args(&["user", "zip"])), EXIT_USAGE);
     }
 
     #[test]
@@ -308,6 +525,88 @@ mod tests {
         assert!(!*ops.notify_called.borrow());
     }
 
+    #[test]
+    fn install_returns_3_when_recording_known_extensions_fails() {
+        let ops = MockCliOps::new().fail_on("record_known_extensions:user");
+        assert_eq!(run_install(&ops), EXIT_CLSID_FAILED);
+        assert!(!*ops.notify_called.borrow());
+    }
+
+    // ----- run_install over an existing install ---------------------------
+
+    #[test]
+    fn upgrade_keeps_extensions_the_user_switched_off() {
+        let all = registry::EXTENSIONS;
+        let bound: Vec<&'static str> = all.iter().copied().filter(|&e| e != ".zip").collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, Some(all));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(!calls.contains(&"register_extension:user:.zip".to_string()));
+        for &ext in &bound {
+            assert!(calls.contains(&format!("register_extension:user:{ext}")));
+        }
+        // The DLL path may have moved, so the CLSID is always rewritten.
+        assert!(calls.contains(&"register_clsid:user".to_string()));
+        // A switched-off extension loses the preview handler as well,
+        // including a binding left behind by an older build.
+        assert!(!calls.contains(&"register_preview_extension:user:.zip".to_string()));
+        assert!(calls.contains(&"unregister_preview_extension:user:.zip".to_string()));
+        for &ext in &bound {
+            assert!(calls.contains(&format!("register_preview_extension:user:{ext}")));
+        }
+        assert!(*ops.notify_called.borrow());
+    }
+
+    #[test]
+    fn upgrade_keeps_the_preview_pane_switched_off() {
+        let all = registry::EXTENSIONS;
+        let ops = MockCliOps::new().upgrading_from(all, false, Some(all));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(calls.iter().all(|c| !c.starts_with("register_preview_")));
+        assert_eq!(
+            calls.len(),
+            1 + all.len() + 1,
+            "thumbnail CLSID, every thumbnail binding, known list"
+        );
+    }
+
+    #[test]
+    fn upgrade_enables_extensions_the_previous_build_did_not_offer() {
+        // The previous build knew everything but `.epub`, so its missing
+        // binding is "new format", not "switched off".
+        let all = registry::EXTENSIONS;
+        let known: Vec<&str> = all.iter().copied().filter(|&e| e != ".epub").collect();
+        let bound: Vec<&'static str> = all
+            .iter()
+            .copied()
+            .filter(|&e| e != ".epub" && e != ".rar")
+            .collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, Some(&known));
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(calls.contains(&"register_extension:user:.epub".to_string()));
+        assert!(!calls.contains(&"register_extension:user:.rar".to_string()));
+    }
+
+    #[test]
+    fn upgrade_from_a_build_without_a_known_list_uses_the_frozen_one() {
+        let bound: Vec<&'static str> = registry::PRE_TRACKING_EXTENSIONS
+            .iter()
+            .copied()
+            .filter(|&e| e != ".cbz")
+            .collect();
+        let ops = MockCliOps::new().upgrading_from(&bound, true, None);
+        assert_eq!(run_install(&ops), EXIT_OK);
+
+        let calls = ops.calls.borrow();
+        assert!(!calls.contains(&"register_extension:user:.cbz".to_string()));
+        assert!(calls.contains(&"record_known_extensions:user".to_string()));
+    }
+
     // ----- run_uninstall --------------------------------------------------
 
     #[test]
@@ -334,10 +633,18 @@ mod tests {
     }
 
     #[test]
-    fn uninstall_is_best_effort_and_still_succeeds_on_failures() {
+    fn uninstall_reports_a_single_failure_without_stopping() {
+        let ops = MockCliOps::new().fail_on("unregister_clsid:machine");
+        assert_eq!(run_uninstall(&ops), EXIT_UNINSTALL_INCOMPLETE);
+        let per_scope = registry::EXTENSIONS.len() * 2 + 2;
+        assert_eq!(ops.calls.borrow().len(), per_scope * 2, "nothing skipped");
+    }
+
+    #[test]
+    fn uninstall_is_best_effort_and_reports_failures() {
         // Fail every single unregister call — typically AccessDenied
         // on HKLM from a non-elevated uninstaller. The driver must
-        // keep going, still notify Explorer, and still exit 0.
+        // keep going, still notify Explorer, and say it was incomplete.
         let ops = MockCliOps::new();
         for scope in ["machine", "user"] {
             ops.fail_on
@@ -355,7 +662,7 @@ mod tests {
                     .push(format!("unregister_preview_extension:{scope}:{ext}"));
             }
         }
-        assert_eq!(run_uninstall(&ops), EXIT_OK);
+        assert_eq!(run_uninstall(&ops), EXIT_UNINSTALL_INCOMPLETE);
         let per_scope = registry::EXTENSIONS.len() * 2 + 2;
         assert_eq!(ops.calls.borrow().len(), per_scope * 2, "nothing skipped");
         assert!(*ops.notify_called.borrow());

@@ -23,6 +23,49 @@ logo and links back to https://slint.dev/.
 Slint's own source is not modified and is linked statically into the
 binary via the `slint` crate.
 
+## jxl-rs
+
+`arcthumb.dll` decodes JPEG XL with [jxl-rs](https://github.com/libjxl/jxl-rs)
+(the `jxl` and `jxl-image-rs-integration` crates), the pure-Rust
+decoder developed within the JPEG XL project and also shipped by
+Chrome and Firefox. It is linked statically and unmodified, and is
+compiled in by default (the `jxl` Cargo feature).
+
+jxl-rs is licensed under the **BSD 3-Clause License**:
+
+> Copyright (c) the JPEG XL Project Authors.
+> All rights reserved.
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions
+> are met:
+>
+> 1. Redistributions of source code must retain the above copyright
+>    notice, this list of conditions and the following disclaimer.
+> 2. Redistributions in binary form must reproduce the above
+>    copyright notice, this list of conditions and the following
+>    disclaimer in the documentation and/or other materials provided
+>    with the distribution.
+> 3. Neither the name of the copyright holder nor the names of its
+>    contributors may be used to endorse or promote products derived
+>    from this software without specific prior written permission.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+> "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+> LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+> FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+> COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT,
+> INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+> (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+> SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+> HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+> STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+> ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+> OF THE POSSIBILITY OF SUCH DAMAGE.
+
+The full text as shipped by the crate is at
+https://github.com/libjxl/jxl-rs/blob/main/LICENSE
+
 ## Roboto (font)
 
 `arcthumb.dll` embeds an A–Z / 0–9 subset of **Roboto Bold**
