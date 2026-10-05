@@ -1,4 +1,4 @@
-; ArcThumb installer script (Inno Setup 6.x)
+﻿; ArcThumb installer script (Inno Setup 6.x)
 ;
 ; Build with:
 ;   cargo build --release
@@ -29,7 +29,14 @@
 ; install mode is passed as `--scope user|machine`, so install dir and
 ; registry hive stay aligned in every mode above, including setup
 ; started elevated and then told to install for the current user only.
-; The Finish page offers a checkbox to launch the configuration GUI.
+; The Finish page offers a checkbox to launch the configuration GUI,
+; and below it a short "support development" note with one link to
+; the /sponsor URL on citrussoda.com, in the language the installer
+; runs in. That URL is a redirect the site controls, so where it lands
+; can change without a new release (the config GUI's Help menu uses
+; the same URL). See CLAUDE.md, "Support links". The
+; link is a plain label: nothing is checked by default and nothing
+; opens unless clicked.
 ;
 ; Pre-uninstall: silently calls `arcthumb-config.exe --uninstall`,
 ; which best-effort cleans both HKCU and HKLM, then removes files.
@@ -85,6 +92,17 @@ SetupIconFile=..\assets\icon.ico
 Name: "english";  MessagesFile: "compiler:Default.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
+[CustomMessages]
+; Finish-page support note. Keep the wording in step with the
+; "Support" section of README.md. The URL is per language, like the
+; `support_url` string in ui/main.slint and lang/ja/LC_MESSAGES/arcthumb.po.
+english.SupportLead=ArcThumb is free and maintained in my spare time. If it saved you some clicking around, a small tip helps me keep at it.
+japanese.SupportLead=ArcThumb は無料で、空き時間に開発しています。役に立ったと思ったら、少額の支援をいただけると続ける励みになります。
+english.SupportLink=Support ArcThumb development
+japanese.SupportLink=ArcThumb の開発を支援する
+english.SupportUrl=https://citrussoda.com/en/arcthumb/sponsor
+japanese.SupportUrl=https://citrussoda.com/arcthumb/sponsor
+
 [Files]
 ; Shell extension DLL — the actual thumbnail provider.
 Source: "..\target\release\arcthumb.dll";        DestDir: "{app}"; Flags: ignoreversion
@@ -113,6 +131,74 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--uninstall"; \
     Flags: runhidden waituntilterminated
 
 [Code]
+var
+  SupportNoteBuilt: Boolean;
+
+// Open the support page in the user's default browser. "AsOriginalUser"
+// matters for per-machine installs: setup runs elevated there, and we
+// do not want the browser inheriting that token.
+procedure SupportLinkClick(Sender: TObject);
+var
+  Url: String;
+  ErrorCode: Integer;
+begin
+  Url := CustomMessage('SupportUrl');
+  if not ShellExecAsOriginalUser('open', Url, '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode) then
+    Log(Format('Could not open %s: %s', [Url, SysErrorMessage(ErrorCode)]));
+end;
+
+// Lay out the support note at the bottom of the Finish page, under
+// the "Launch Configuration" checkbox. Done once, the first time the
+// page is shown, because the RunList is only positioned by then.
+procedure BuildSupportNote;
+var
+  Lead, Link: TNewStaticText;
+  Left, Width, Top, LinkTop: Integer;
+begin
+  if SupportNoteBuilt then
+    Exit;
+  SupportNoteBuilt := True;
+
+  Left := WizardForm.FinishedLabel.Left;
+  Width := WizardForm.FinishedLabel.Width;
+
+  Lead := TNewStaticText.Create(WizardForm);
+  Lead.Parent := WizardForm.FinishedPage;
+  Lead.Caption := CustomMessage('SupportLead');
+  Lead.AutoSize := False;
+  Lead.WordWrap := True;
+  Lead.Left := Left;
+  Lead.Width := Width;
+  Lead.AdjustHeight;
+
+  // Anchor the block to the bottom of the page: lead text, then the
+  // link on its own row beneath it.
+  LinkTop := WizardForm.FinishedPage.ClientHeight - ScaleY(16) - ScaleY(14);
+  Top := LinkTop - ScaleY(6) - Lead.Height;
+  Lead.Top := Top;
+
+  Link := TNewStaticText.Create(WizardForm);
+  Link.Parent := WizardForm.FinishedPage;
+  Link.Caption := CustomMessage('SupportLink');
+  Link.Left := Left;
+  Link.Top := LinkTop;
+  Link.Cursor := crHand;
+  Link.Font.Color := clBlue;
+  Link.Font.Style := [fsUnderline];
+  Link.OnClick := @SupportLinkClick;
+
+  // Keep the checkbox list from running underneath the note.
+  if WizardForm.RunList.Visible and
+     (WizardForm.RunList.Top + WizardForm.RunList.Height > Top) then
+    WizardForm.RunList.Height := Top - ScaleY(8) - WizardForm.RunList.Top;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    BuildSupportNote;
+end;
+
 // Register the shell extension into the hive that matches the install
 // mode chosen above (HKLM for all users, HKCU for the current user).
 // The DLL was just placed in {app} so `--install` finds it via

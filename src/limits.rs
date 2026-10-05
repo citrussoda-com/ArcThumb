@@ -37,9 +37,10 @@ pub const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 /// spend a minute decoding a 1 GB TIFF.
 pub const MAX_ENTRY_SIZE: u64 = 500 * 1024 * 1024; // 500 MiB
 
-/// Maximum size of the 7z metadata header we let `sevenz-rust` load.
+/// Maximum size of the 7z metadata header we let `sevenz-rust2` load.
 /// The crate allocates the size declared in the 32-byte signature
-/// header without checking it, so a tiny file can ask for gigabytes.
+/// header after checking only that it fits in the file, so a sparse
+/// or padded file can still ask for gigabytes.
 /// A real header for 100k entries is a few MiB.
 pub const MAX_SEVENZ_HEADER_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
 
