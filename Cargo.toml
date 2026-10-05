@@ -32,8 +32,6 @@ default = ["jxl"]
 # compiled in. We take sse42 + avx and skip avx512, which costs
 # another ~435 KB and is fused off on consumer Intel chips from 12th
 # gen onward.
-#
-# Build without it with: cargo build --release --no-default-features
 jxl = ["dep:jxl-image-rs-integration"]
 
 [dependencies]
