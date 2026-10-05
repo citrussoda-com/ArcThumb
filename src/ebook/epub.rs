@@ -149,8 +149,8 @@ fn read_entry_to_string<R: Read + Seek>(
 /// Strip an XML namespace prefix (`opf:item` → `item`). EPUB OPF
 /// files often use a namespace prefix and we don't want to do real
 /// namespace resolution for two-tag matching.
-fn strip_namespace(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
+fn strip_namespace(name: &str) -> &str {
+    match name.find(':') {
         Some(idx) => &name[idx + 1..],
         None => name,
     }
@@ -159,7 +159,7 @@ fn strip_namespace(name: &[u8]) -> &[u8] {
 /// True if `e`'s tag name (with any namespace prefix stripped) equals
 /// `expected`. Inlined as a helper because the borrow checker needs
 /// the `QName` to live in a named local while we look at its bytes.
-fn local_name_eq(e: &BytesStart, expected: &[u8]) -> bool {
+fn local_name_eq(e: &BytesStart, expected: &str) -> bool {
     let qname = e.name();
     strip_namespace(qname.as_ref()) == expected
 }
@@ -167,13 +167,13 @@ fn local_name_eq(e: &BytesStart, expected: &[u8]) -> bool {
 /// Find the value of an attribute by local name (namespace prefixes
 /// stripped). Decodes XML character entities so paths containing
 /// `&amp;` round-trip correctly.
-fn attr_value(e: &BytesStart, reader: &Reader<&[u8]>, key: &[u8]) -> Option<String> {
+fn attr_value(e: &BytesStart, key: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         let attr_qname = attr.key;
         let attr_local = strip_namespace(attr_qname.as_ref());
         if attr_local == key {
             return attr
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .normalized_value(XmlVersion::Implicit1_0)
                 .ok()
                 .map(|cow| cow.into_owned());
         }
@@ -207,10 +207,10 @@ fn parse_container_xml(xml: &str) -> Option<String> {
 /// `None` if `e` is not a `<rootfile>` or has no `full-path`. Lifted
 /// out of `parse_container_xml` so the caller's match arm stays flat.
 fn rootfile_full_path(e: &BytesStart) -> Option<String> {
-    if !local_name_eq(e, b"rootfile") {
+    if !local_name_eq(e, "rootfile") {
         return None;
     }
-    attr_value(e, &Reader::from_str(""), b"full-path")
+    attr_value(e, "full-path")
 }
 
 /// Single-pass scan of an OPF document. Collects manifest items,
@@ -229,10 +229,10 @@ fn find_cover_href(xml: &str) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
-                if local_name_eq(&e, b"item") {
-                    handle_item(&e, &reader, &mut items, &mut epub3_cover_href);
-                } else if local_name_eq(&e, b"meta") {
-                    handle_meta(&e, &reader, &mut epub2_cover_id);
+                if local_name_eq(&e, "item") {
+                    handle_item(&e, &mut items, &mut epub3_cover_href);
+                } else if local_name_eq(&e, "meta") {
+                    handle_meta(&e, &mut epub2_cover_id);
                 }
             }
             Ok(Event::Eof) => break,
@@ -257,13 +257,12 @@ fn find_cover_href(xml: &str) -> Option<String> {
 
 fn handle_item(
     e: &BytesStart,
-    reader: &Reader<&[u8]>,
     items: &mut HashMap<String, String>,
     epub3_cover_href: &mut Option<String>,
 ) {
-    let id = attr_value(e, reader, b"id");
-    let href = attr_value(e, reader, b"href");
-    let properties = attr_value(e, reader, b"properties");
+    let id = attr_value(e, "id");
+    let href = attr_value(e, "href");
+    let properties = attr_value(e, "properties");
 
     if let (Some(id), Some(href)) = (id, href.clone()) {
         items.insert(id, href.clone());
@@ -279,9 +278,9 @@ fn handle_item(
     }
 }
 
-fn handle_meta(e: &BytesStart, reader: &Reader<&[u8]>, epub2_cover_id: &mut Option<String>) {
-    let name = attr_value(e, reader, b"name");
-    let content = attr_value(e, reader, b"content");
+fn handle_meta(e: &BytesStart, epub2_cover_id: &mut Option<String>) {
+    let name = attr_value(e, "name");
+    let content = attr_value(e, "content");
     if let (Some(n), Some(c)) = (name, content)
         && n == "cover"
         && epub2_cover_id.is_none()

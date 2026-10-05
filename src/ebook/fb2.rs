@@ -74,8 +74,8 @@ pub fn try_extract_cover(xml_bytes: &[u8]) -> Option<(String, Vec<u8>)> {
 // =============================================================================
 
 /// Strip an XML namespace prefix (`l:href` → `href`).
-fn strip_namespace(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
+fn strip_namespace(name: &str) -> &str {
+    match name.find(':') {
         Some(idx) => &name[idx + 1..],
         None => name,
     }
@@ -84,19 +84,19 @@ fn strip_namespace(name: &[u8]) -> &[u8] {
 /// True if the local name (with any namespace prefix removed) of
 /// `e`'s tag matches `expected`. Takes a `QName` so it works for
 /// both `BytesStart` (open tag) and `BytesEnd` (close tag).
-fn qname_local_eq(qname: QName, expected: &[u8]) -> bool {
+fn qname_local_eq(qname: QName, expected: &str) -> bool {
     strip_namespace(qname.as_ref()) == expected
 }
 
 /// Look up an attribute value by local name. Decodes XML character
 /// entities so e.g. `&amp;` survives the round-trip.
-fn attr_value(e: &BytesStart, reader: &Reader<&[u8]>, key: &[u8]) -> Option<String> {
+fn attr_value(e: &BytesStart, key: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         let qname = attr.key;
         let local = strip_namespace(qname.as_ref());
         if local == key {
             return attr
-                .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                .normalized_value(XmlVersion::Implicit1_0)
                 .ok()
                 .map(|cow| cow.into_owned());
         }
@@ -127,7 +127,7 @@ fn find_cover_id(xml: &str) -> Option<String> {
                 update_section_depth(e.name(), -1, &mut in_title_info, &mut in_coverpage);
             }
             Ok(Event::Empty(e)) if in_title_info > 0 && in_coverpage > 0 => {
-                if let Some(id) = cover_image_id(&e, &reader) {
+                if let Some(id) = cover_image_id(&e) {
                     return Some(id);
                 }
             }
@@ -142,9 +142,9 @@ fn find_cover_id(xml: &str) -> Option<String> {
 /// the same name is entered (`delta = 1`) or exited (`delta = -1`).
 /// Other tags are ignored.
 fn update_section_depth(name: QName, delta: i32, in_title_info: &mut i32, in_coverpage: &mut i32) {
-    if qname_local_eq(name, b"title-info") {
+    if qname_local_eq(name, "title-info") {
         *in_title_info += delta;
-    } else if qname_local_eq(name, b"coverpage") {
+    } else if qname_local_eq(name, "coverpage") {
         *in_coverpage += delta;
     }
 }
@@ -152,11 +152,11 @@ fn update_section_depth(name: QName, delta: i32, in_title_info: &mut i32, in_cov
 /// Extract the binary id from a `<image l:href="#id"/>` element.
 /// Returns `None` if `e` is not an `<image>`, has no `href`, or
 /// resolves to the empty string after stripping the leading `#`.
-fn cover_image_id(e: &BytesStart, reader: &Reader<&[u8]>) -> Option<String> {
-    if !qname_local_eq(e.name(), b"image") {
+fn cover_image_id(e: &BytesStart) -> Option<String> {
+    if !qname_local_eq(e.name(), "image") {
         return None;
     }
-    let href = attr_value(e, reader, b"href")?;
+    let href = attr_value(e, "href")?;
     // The href is "#binary_id"; strip the leading `#`. Some malformed
     // FB2s omit it, so the call is `unwrap_or` not `?`.
     let id = href.strip_prefix('#').unwrap_or(&href);
@@ -201,7 +201,7 @@ where
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => collector.try_enter(&e, &reader, &matcher),
+            Ok(Event::Start(e)) => collector.try_enter(&e, &matcher),
             Ok(Event::End(e)) if collector.try_exit(&e) => break,
             Ok(Event::Text(t)) if collector.is_active() => collector.append_text(&t),
             Ok(Event::CData(t)) if collector.is_active() => collector.append_text(&t),
@@ -242,17 +242,17 @@ impl BinaryCollector {
     /// Try to mark the start of a `<binary>` we care about. Bails
     /// out silently for non-binary tags, already-active state, or
     /// binaries the matcher rejects.
-    fn try_enter<F>(&mut self, e: &BytesStart, reader: &Reader<&[u8]>, matcher: &F)
+    fn try_enter<F>(&mut self, e: &BytesStart, matcher: &F)
     where
         F: Fn(&str, Option<&str>) -> bool,
     {
-        if self.is_active() || !qname_local_eq(e.name(), b"binary") {
+        if self.is_active() || !qname_local_eq(e.name(), "binary") {
             return;
         }
-        let Some(id) = attr_value(e, reader, b"id") else {
+        let Some(id) = attr_value(e, "id") else {
             return;
         };
-        let ct = attr_value(e, reader, b"content-type");
+        let ct = attr_value(e, "content-type");
         if !matcher(&id, ct.as_deref()) {
             return;
         }
@@ -264,16 +264,13 @@ impl BinaryCollector {
     /// Returns `true` if `e` is the closing `</binary>` for the
     /// element we entered, signalling the caller to stop reading.
     fn try_exit(&self, e: &quick_xml::events::BytesEnd) -> bool {
-        self.is_active() && qname_local_eq(e.name(), b"binary")
+        self.is_active() && qname_local_eq(e.name(), "binary")
     }
 
-    /// Append a chunk of `Text` or `CData` content. Invalid UTF-8
-    /// is silently dropped — base64 is ASCII so this only matters
-    /// for malformed inputs.
-    fn append_text(&mut self, bytes: &[u8]) {
-        if let Ok(s) = std::str::from_utf8(bytes) {
-            self.text.push_str(s);
-        }
+    /// Append a chunk of `Text` or `CData` content. quick-xml hands us
+    /// `&str` already, so there is no UTF-8 check to do here.
+    fn append_text(&mut self, s: &str) {
+        self.text.push_str(s);
     }
 
     /// Decode the captured base64 and synthesize a filename. Returns
@@ -623,10 +620,10 @@ mod tests {
 
     // ---- update_section_depth -------------------------------------
 
-    /// Build a `QName` from a literal byte string for use in tests.
-    /// `QName::from(...)` accepts a `&[u8]` so this is just a thin
+    /// Build a `QName` from a string literal for use in tests.
+    /// `QName` is a newtype over `&str` so this is just a thin
     /// wrapper that lets the test bodies stay readable.
-    fn qname(s: &[u8]) -> QName<'_> {
+    fn qname(s: &str) -> QName<'_> {
         QName(s)
     }
 
@@ -634,7 +631,7 @@ mod tests {
     fn update_section_depth_increments_title_info() {
         let mut ti = 0;
         let mut cp = 0;
-        update_section_depth(qname(b"title-info"), 1, &mut ti, &mut cp);
+        update_section_depth(qname("title-info"), 1, &mut ti, &mut cp);
         assert_eq!(ti, 1);
         assert_eq!(cp, 0);
     }
@@ -643,7 +640,7 @@ mod tests {
     fn update_section_depth_decrements_title_info() {
         let mut ti = 1;
         let mut cp = 0;
-        update_section_depth(qname(b"title-info"), -1, &mut ti, &mut cp);
+        update_section_depth(qname("title-info"), -1, &mut ti, &mut cp);
         assert_eq!(ti, 0);
         assert_eq!(cp, 0);
     }
@@ -652,10 +649,10 @@ mod tests {
     fn update_section_depth_tracks_coverpage_independently() {
         let mut ti = 0;
         let mut cp = 0;
-        update_section_depth(qname(b"coverpage"), 1, &mut ti, &mut cp);
+        update_section_depth(qname("coverpage"), 1, &mut ti, &mut cp);
         assert_eq!(ti, 0);
         assert_eq!(cp, 1);
-        update_section_depth(qname(b"coverpage"), -1, &mut ti, &mut cp);
+        update_section_depth(qname("coverpage"), -1, &mut ti, &mut cp);
         assert_eq!(cp, 0);
     }
 
@@ -663,9 +660,9 @@ mod tests {
     fn update_section_depth_ignores_other_tags() {
         let mut ti = 5;
         let mut cp = 7;
-        update_section_depth(qname(b"body"), 1, &mut ti, &mut cp);
-        update_section_depth(qname(b"section"), -1, &mut ti, &mut cp);
-        update_section_depth(qname(b"image"), 1, &mut ti, &mut cp);
+        update_section_depth(qname("body"), 1, &mut ti, &mut cp);
+        update_section_depth(qname("section"), -1, &mut ti, &mut cp);
+        update_section_depth(qname("image"), 1, &mut ti, &mut cp);
         assert_eq!(ti, 5);
         assert_eq!(cp, 7);
     }
@@ -676,7 +673,7 @@ mod tests {
         // event still bumps the counter.
         let mut ti = 0;
         let mut cp = 0;
-        update_section_depth(qname(b"fb:title-info"), 1, &mut ti, &mut cp);
+        update_section_depth(qname("fb:title-info"), 1, &mut ti, &mut cp);
         assert_eq!(ti, 1);
     }
 
@@ -684,14 +681,14 @@ mod tests {
 
     /// Parse a one-element XML snippet and run `f` with the resulting
     /// `BytesStart`. Lifted out so the per-test setup is one line.
-    fn with_first_start<R>(xml: &str, f: impl FnOnce(&BytesStart, &Reader<&[u8]>) -> R) -> R {
+    fn with_first_start<R>(xml: &str, f: impl FnOnce(&BytesStart) -> R) -> R {
         let mut reader = Reader::from_str(xml);
         reader.config_mut().trim_text(false);
         let mut buf = Vec::new();
         loop {
             let event = reader.read_event_into(&mut buf).expect("xml");
             match event {
-                Event::Start(ref e) | Event::Empty(ref e) => return f(e, &reader),
+                Event::Start(ref e) | Event::Empty(ref e) => return f(e),
                 Event::Eof => panic!("no Start event in test xml"),
                 _ => {}
             }
@@ -708,8 +705,8 @@ mod tests {
     #[test]
     fn binary_collector_try_enter_ignores_non_binary_tags() {
         let mut collector = BinaryCollector::default();
-        with_first_start(r#"<title-info></title-info>"#, |e, r| {
-            collector.try_enter(e, r, &|_, _| true);
+        with_first_start(r#"<title-info></title-info>"#, |e| {
+            collector.try_enter(e, &|_, _| true);
         });
         assert!(!collector.is_active());
     }
@@ -719,7 +716,7 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="other.jpg" content-type="image/jpeg"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|id, _| id == "wanted.jpg"),
+            |e| collector.try_enter(e, &|id, _| id == "wanted.jpg"),
         );
         assert!(!collector.is_active());
     }
@@ -729,7 +726,7 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="cover.jpg" content-type="image/jpeg"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         assert!(collector.is_active());
         assert_eq!(collector.target_id.as_deref(), Some("cover.jpg"));
@@ -741,14 +738,14 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="first.jpg" content-type="image/jpeg"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         // Second try_enter on a different binary must NOT overwrite
         // the first one — once we're locked onto a target, we stay
         // locked until try_exit fires.
         with_first_start(
             r#"<binary id="second.jpg" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         assert_eq!(collector.target_id.as_deref(), Some("first.jpg"));
         assert_eq!(collector.target_ct.as_deref(), Some("image/jpeg"));
@@ -757,8 +754,8 @@ mod tests {
     #[test]
     fn binary_collector_try_enter_skips_binary_without_id() {
         let mut collector = BinaryCollector::default();
-        with_first_start(r#"<binary content-type="image/jpeg"></binary>"#, |e, r| {
-            collector.try_enter(e, r, &|_, _| true)
+        with_first_start(r#"<binary content-type="image/jpeg"></binary>"#, |e| {
+            collector.try_enter(e, &|_, _| true)
         });
         assert!(!collector.is_active());
     }
@@ -768,26 +765,11 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="x.png" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
-        collector.append_text(b"abc");
-        collector.append_text(b"def");
+        collector.append_text("abc");
+        collector.append_text("def");
         assert_eq!(collector.text, "abcdef");
-    }
-
-    #[test]
-    fn binary_collector_append_text_drops_invalid_utf8_silently() {
-        let mut collector = BinaryCollector::default();
-        with_first_start(
-            r#"<binary id="x.png" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
-        );
-        collector.append_text(b"good");
-        collector.append_text(&[0xFF, 0xFE]); // invalid UTF-8
-        collector.append_text(b"bytes");
-        // The invalid chunk is dropped wholesale; the surrounding
-        // valid chunks survive.
-        assert_eq!(collector.text, "goodbytes");
     }
 
     #[test]
@@ -801,10 +783,10 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="hi.bin" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         // Base64 of b"hello"
-        collector.append_text(b"aGVsbG8=");
+        collector.append_text("aGVsbG8=");
         let (name, bytes) = collector.finish().expect("decoded");
         assert_eq!(name, "hi.bin");
         assert_eq!(bytes, b"hello");
@@ -815,12 +797,12 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="hi.bin" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         // XML pretty-printers love wrapping base64 across lines.
         // The collector strips spaces / newlines / tabs before
         // handing the payload to base64.
-        collector.append_text(b"aGVs\n  bG8=\t");
+        collector.append_text("aGVs\n  bG8=\t");
         let (_, bytes) = collector.finish().expect("decoded");
         assert_eq!(bytes, b"hello");
     }
@@ -830,10 +812,10 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="x.bin" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
         // `!!!` is not valid base64 alphabet.
-        collector.append_text(b"!!!");
+        collector.append_text("!!!");
         assert!(collector.finish().is_none());
     }
 
@@ -842,9 +824,9 @@ mod tests {
         let mut collector = BinaryCollector::default();
         with_first_start(
             r#"<binary id="cover" content-type="image/png"></binary>"#,
-            |e, r| collector.try_enter(e, r, &|_, _| true),
+            |e| collector.try_enter(e, &|_, _| true),
         );
-        collector.append_text(b"aGVsbG8=");
+        collector.append_text("aGVsbG8=");
         let (name, _) = collector.finish().expect("decoded");
         // id had no dot, so synthesize_filename appended the
         // content-type-derived extension.

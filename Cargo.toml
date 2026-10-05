@@ -62,7 +62,7 @@ tar = "0.4"
 # Streaming XML parser used by the ebook backends (EPUB, FB2). Pure
 # Rust, no allocator surprises, used by widely-deployed crates like
 # `zip` and `sevenz-rust` already so it pulls no new dependencies.
-quick-xml = "0.41"
+quick-xml = "0.42"
 # Used by the FB2 backend to decode the base64-encoded images that
 # FictionBook embeds inline in the document. Pure Rust, ~25 KB.
 base64 = "0.23"
