@@ -61,6 +61,15 @@ fn main() {
         .manifest_required()
         .expect("failed to embed Windows resource (manifest + icon)");
 
+    // `unrar_sys` compiles RAR's crypt.cpp, which calls CryptGenRandom
+    // and friends from advapi32, but its own build script only links
+    // shell32. Until the move to sevenz-rust2 the import happened to
+    // arrive through a transitive dependency of the old 7z crate;
+    // declare it here so linking does not depend on what the rest of
+    // the tree pulls in.
+    #[cfg(target_os = "windows")]
+    println!("cargo:rustc-link-lib=advapi32");
+
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let crate_name = std::env::var("CARGO_PKG_NAME").expect("CARGO_PKG_NAME is set by cargo");
 

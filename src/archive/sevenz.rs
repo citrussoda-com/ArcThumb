@@ -1,4 +1,9 @@
-//! 7z backend — via `sevenz-rust`, direct Read+Seek.
+//! 7z backend — via `sevenz-rust2`, direct Read+Seek.
+//!
+//! `sevenz-rust2` is the maintained fork of the original `sevenz-rust`
+//! crate (same Apache-2.0 license). We only pull the decoder:
+//! `default-features = false` drops the encoder, AES and the
+//! path-based convenience helpers, none of which the DLL needs.
 
 use std::error::Error;
 use std::io::{Read, Seek, SeekFrom};
@@ -10,14 +15,18 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
     mut reader: R,
     settings: &Settings,
 ) -> Result<(String, Vec<u8>), Box<dyn Error>> {
-    use sevenz_rust::{Archive, BlockDecoder};
+    use sevenz_rust2::{Archive, BlockDecoder, Password};
 
     let size = reader.seek(SeekFrom::End(0))?;
     reader.seek(SeekFrom::Start(0))?;
     check_start_header(&mut reader, size)?;
     reader.seek(SeekFrom::Start(0))?;
 
-    let archive = Archive::read(&mut reader, size, &[])?;
+    // Encrypted archives are unsupported (README), so the password is
+    // always empty. `Archive::read` seeks to the end itself to learn
+    // the file size, so there is no size argument any more.
+    let password = Password::empty();
+    let archive = Archive::read(&mut reader, &password)?;
 
     let entry_count = archive.files.len();
     if entry_count > limits::MAX_ARCHIVE_ENTRIES {
@@ -28,7 +37,7 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
         .into());
     }
 
-    // The 7z metadata lives in the footer, which SevenZReader::new has
+    // The 7z metadata lives in the footer, which `Archive::read` has
     // already parsed — so we can list all entry names without reading
     // any compressed data. Candidates carry their file index so the
     // extraction below matches on it instead of on the name, which
@@ -39,48 +48,61 @@ pub(super) fn sevenz_read_first_image<R: Read + Seek>(
         .enumerate()
         .filter(|(_, f)| {
             !f.is_directory()
-                && settings.accepts_image_ext(&f.name)
-                && f.size <= limits::MAX_ENTRY_SIZE
+                && settings.accepts_image_ext(f.name())
+                && f.size() <= limits::MAX_ENTRY_SIZE
         })
-        .map(|(i, f)| (i, f.name.clone()))
+        .map(|(i, f)| (i, f.name().to_string()))
         .collect();
     let (target_index, target) = settings
         .pick_first_image(candidates)
         .ok_or("archive contains no (small enough) image files")?;
 
-    // Second phase: open only the block ("folder") that holds the
-    // target. Entries sharing a block come out of one decompression
-    // stream in order, and sevenz-rust does not skip the ones the
-    // callback leaves unread, so everything in front of the target has
-    // to be drained or the target's reader starts at the wrong offset.
-    let folder_index = archive
+    // Second phase: open only the block that holds the target. Entries
+    // sharing a block come out of one decompression stream in order,
+    // and sevenz-rust2 does not skip the ones the callback leaves
+    // unread, so everything in front of the target has to be drained
+    // or the target's reader starts at the wrong offset.
+    let block_index = archive
         .stream_map
-        .file_folder_index
+        .file_block_index
         .get(target_index)
         .copied()
         .flatten()
         .ok_or("7z entry has no data stream")?;
-    let mut file_index = archive.stream_map.folder_first_file_index[folder_index];
+    let mut file_index = archive.stream_map.block_first_file_index[block_index];
     let mut skipped: u64 = 0;
     let mut captured: Option<Vec<u8>> = None;
-    BlockDecoder::new(folder_index, &archive, &[], &mut reader).for_each_entries(
-        &mut |entry, r| {
-            let current = file_index;
-            file_index += 1;
-            if current == target_index {
-                captured = Some(limits::read_capped(r, entry.size, limits::MAX_ENTRY_SIZE)?);
-                return Ok(false); // stop iteration
-            }
-            skipped = skipped.saturating_add(entry.size);
-            if skipped > limits::MAX_SOLID_SKIP {
-                return Err(sevenz_rust::Error::other(
-                    "too much data ahead of the image in a solid 7z block",
-                ));
-            }
-            std::io::copy(r, &mut std::io::sink())?;
-            Ok(true)
-        },
-    )?;
+    // One decoder thread. Multi-threading only kicks in for LZMA2
+    // streams encoded with MT support, and inside Explorer a thread
+    // pool per thumbnail is not worth it for a single entry.
+    const DECODE_THREADS: u32 = 1;
+    BlockDecoder::new(
+        DECODE_THREADS,
+        block_index,
+        &archive,
+        &password,
+        &mut reader,
+    )
+    .for_each_entries(&mut |entry, r| {
+        let current = file_index;
+        file_index += 1;
+        if current == target_index {
+            captured = Some(limits::read_capped(
+                r,
+                entry.size(),
+                limits::MAX_ENTRY_SIZE,
+            )?);
+            return Ok(false); // stop iteration
+        }
+        skipped = skipped.saturating_add(entry.size());
+        if skipped > limits::MAX_SOLID_SKIP {
+            return Err(sevenz_rust2::Error::Other(
+                "too much data ahead of the image in a solid 7z block".into(),
+            ));
+        }
+        std::io::copy(r, &mut std::io::sink())?;
+        Ok(true)
+    })?;
 
     let data = captured.ok_or("7z entry found in metadata but not in stream")?;
     Ok((target, data))
@@ -125,16 +147,12 @@ mod tests {
     }
 
     fn build_7z(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
-        use sevenz_rust::{SevenZArchiveEntry, SevenZWriter};
+        use sevenz_rust2::{ArchiveEntry, ArchiveWriter};
         let mut buf = Vec::new();
         {
-            let mut sz = SevenZWriter::new(Cursor::new(&mut buf)).unwrap();
+            let mut sz = ArchiveWriter::new(Cursor::new(&mut buf)).unwrap();
             for (name, body) in entries {
-                let mut entry = SevenZArchiveEntry::new();
-                entry.name = (*name).to_string();
-                entry.has_stream = true;
-                entry.size = body.len() as u64;
-                sz.push_archive_entry(entry, Some(&mut Cursor::new(*body)))
+                sz.push_archive_entry(ArchiveEntry::new_file(name), Some(Cursor::new(*body)))
                     .unwrap();
             }
             sz.finish().unwrap();
@@ -172,24 +190,19 @@ mod tests {
     /// Like `build_7z`, but packs every entry into one solid block, the
     /// way 7-Zip does by default.
     fn build_solid_7z(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
-        use sevenz_rust::{SevenZArchiveEntry, SevenZWriter, SourceReader};
+        use sevenz_rust2::{ArchiveEntry, ArchiveWriter, SourceReader};
         let mut buf = Vec::new();
         {
-            let mut sz = SevenZWriter::new(Cursor::new(&mut buf)).unwrap();
+            let mut sz = ArchiveWriter::new(Cursor::new(&mut buf)).unwrap();
             let headers = entries
                 .iter()
-                .map(|(name, _)| {
-                    let mut entry = SevenZArchiveEntry::new();
-                    entry.name = (*name).to_string();
-                    entry.has_stream = true;
-                    entry
-                })
+                .map(|(name, _)| ArchiveEntry::new_file(name))
                 .collect();
             let bodies: Vec<SourceReader<Cursor<&[u8]>>> = entries
                 .iter()
                 .map(|(_, body)| SourceReader::new(Cursor::new(*body)))
                 .collect();
-            sz.push_archive_entries(headers, bodies.into()).unwrap();
+            sz.push_archive_entries(headers, bodies).unwrap();
             sz.finish().unwrap();
         }
         Cursor::new(buf)

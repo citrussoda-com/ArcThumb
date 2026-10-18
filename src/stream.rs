@@ -1,6 +1,6 @@
 //! Adapter that lets a COM `IStream` be used as a Rust `Read + Seek`.
 //!
-//! The `zip`, `unrar`, and `sevenz-rust` crates all want a
+//! The `zip`, `unrar`, and `sevenz-rust2` crates all want a
 //! `std::io::Read + Seek` source. Explorer hands us an `IStream` via
 //! `IInitializeWithStream::Initialize`. This file bridges the two.
 

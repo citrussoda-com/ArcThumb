@@ -279,6 +279,6 @@ Third-party components redistributed with `arcthumb-config.exe` are listed in [T
 
 ## Credits
 
-The idea comes from [CBXShell](https://github.com/T800G/CBXShell) by T800 Productions and [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) (originally by kaioa, now maintained by fire-eggs). The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust](https://crates.io/crates/sevenz-rust) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [Slint](https://slint.dev/) for the configuration dialog.
+The idea comes from [CBXShell](https://github.com/T800G/CBXShell) by T800 Productions and [DarkThumbs](https://github.com/fire-eggs/DarkThumbs) (originally by kaioa, now maintained by fire-eggs). The implementation uses [windows-rs](https://github.com/microsoft/windows-rs) for COM, [image](https://github.com/image-rs/image) for decoding, [zip](https://github.com/zip-rs/zip2) / [unrar](https://github.com/muja/unrar.rs) / [sevenz-rust2](https://github.com/hasenbanck/sevenz-rust2) / [tar](https://github.com/alexcrichton/tar-rs) for archives, and [Slint](https://slint.dev/) for the configuration dialog.
 
 Bug reports and feature requests go to [GitHub Issues](https://github.com/citrussoda-com/ArcThumb/issues).

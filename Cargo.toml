@@ -54,12 +54,20 @@ windows = { version = "0.62", features = [
 ]}
 winreg = "0.56"
 zip = { version = "8", default-features = false, features = ["deflate"] }
-sevenz-rust = "0.6"
+# 7z reader. `sevenz-rust2` is the maintained fork of the original
+# `sevenz-rust` (whose repo is gone and whose last release was
+# 2024-07). The DLL only decodes, so the default features are off:
+# that drops the LZMA encoder, AES-256 (encrypted archives are
+# unsupported anyway) and the path-based helpers. LZMA/LZMA2/COPY and
+# the BCJ filters are always compiled in, which is what the old crate
+# gave us. The `compress` feature is re-enabled for tests only (see
+# dev-dependencies) so the unit tests can build fixtures in memory.
+sevenz-rust2 = { version = "0.23", default-features = false }
 unrar = "0.5"
 tar = "0.4"
 # Streaming XML parser used by the ebook backends (EPUB, FB2). Pure
-# Rust, no allocator surprises, used by widely-deployed crates like
-# `zip` and `sevenz-rust` already so it pulls no new dependencies.
+# Rust, no allocator surprises, already used by widely-deployed crates
+# like `zip` so it pulls in little that is new.
 quick-xml = "0.42"
 # Used by the FB2 backend to decode the base64-encoded images that
 # FictionBook embeds inline in the document. Pure Rust, ~25 KB.
@@ -129,6 +137,10 @@ slint-build = "1.15"
 rspolib = "0.1"
 
 [dev-dependencies]
+# The archive unit tests build 7z fixtures in memory with
+# `ArchiveWriter`, which lives behind the `compress` feature. Cargo's
+# resolver keeps dev-dependency features out of the release DLL.
+sevenz-rust2 = { version = "0.23", default-features = false, features = ["compress"] }
 # Headless backend for Slint so the arcthumb-config GUI tests can
 # create real Slint components and exercise the property setters /
 # getters / callbacks without bringing up a window or requiring a
