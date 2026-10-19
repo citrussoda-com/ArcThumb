@@ -53,7 +53,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ]}
 winreg = "0.56"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 sevenz-rust = "0.6"
 unrar = "0.5"
 tar = "0.4"
@@ -149,7 +149,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ]}
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Used by archive::tests to compute the file/header CRCs needed to
 # hand-craft a minimal RAR4 fixture in-memory (RAR is a proprietary
