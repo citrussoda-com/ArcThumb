@@ -79,7 +79,7 @@ image = { version = "0.25", default-features = false, features = [
 # compiled. Only used for large-JPEG sources; other formats skip
 # this decoder entirely.
 jpeg-decoder = "0.3"
-jxl-image-rs-integration = { version = "0.7", optional = true, default-features = false, features = [
+jxl-image-rs-integration = { version = "0.8", optional = true, default-features = false, features = [
     "sse42",
     "avx",
 ] }
